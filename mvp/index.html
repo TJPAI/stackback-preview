@@ -9,10 +9,10 @@
 </head>
 <body>
   <main class="shell">
-    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.5</div></div>
+    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.6</div></div>
     <section class="hero">
       <h1>现在怎么买，最省？</h1>
-      <p>告诉 StackBack 你现在想买什么。先找附近门店，再把官方优惠、第一方核验条款和仍然未知的部分分开，给你一个能继续执行的答案。</p>
+      <p>告诉 StackBack 你现在想买什么。先找附近门店，再把官方优惠候选、第一方核验条款和仍然未知的部分分开，给你一个能继续执行的答案。</p>
     </section>
 
     <section class="location-card">
@@ -25,15 +25,16 @@
 
     <form class="search-card" data-role="search-form">
       <div class="search-row">
-        <input class="search-input" data-role="query" autocomplete="off" maxlength="80" placeholder="例如：麦当劳、星巴克、肯德基">
+        <input class="search-input" data-role="query" autocomplete="off" maxlength="80" placeholder="例如：麦当劳、肯德基、汉堡王、星巴克">
         <button class="primary-btn" data-action="search" type="submit" disabled>告诉我现在怎么买</button>
       </div>
       <div class="chips">
         <button class="chip" type="button" data-query="麦当劳">麦当劳</button>
         <button class="chip" type="button" data-query="肯德基">肯德基</button>
+        <button class="chip" type="button" data-query="汉堡王">汉堡王</button>
         <button class="chip" type="button" data-query="星巴克">星巴克</button>
       </div>
-      <div class="note">麦当劳已加入第一方官方活动核验通道；本机结构化执行反馈可在严格时效和精确上下文下帮助后排失败候选。Candidate ≠ Confirmed；本机反馈 ≠ 官方失效；用户自报 ≠ 全局可靠省额。</div>
+      <div class="note">中国区四品牌官方候选统一来自共享 Candidate Read Model；麦当劳另有独立第一方活动核验通道。本机结构化反馈只影响本机候选排序。Candidate ≠ Confirmed；共享候选 ≠ 已确认可用；用户自报 ≠ 全局可靠省额。</div>
     </form>
 
     <section data-role="execution-ledger"></section>

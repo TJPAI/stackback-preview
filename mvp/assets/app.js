@@ -9,6 +9,7 @@
   const BRAND_RULES = Object.freeze([
     { id: 'mcd-cn', name: '麦当劳', searchText: '麦当劳', pattern: /(麦当劳|mcdonald'?s|mcd)/i },
     { id: 'kfc-cn', name: '肯德基', searchText: '肯德基', pattern: /(肯德基|\bkfc\b)/i },
+    { id: 'burger-king-cn', name: '汉堡王', searchText: '汉堡王', pattern: /(汉堡王|burger\s*king)/i },
     { id: 'starbucks', name: '星巴克', searchText: '星巴克', pattern: /(星巴克|starbucks)/i }
   ]);
 
@@ -704,43 +705,86 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const READ_MODEL_PATH = '../shared/candidate-read-model-v1.json';
   const ROUTES = Object.freeze({
-    'mcd-cn': Object.freeze({ path: '../data/mcd-cn.json', expectedBrandId: 'mcd-cn', allowedHosts: ['www.mcdonalds.com.cn'] }),
-    'kfc-cn': Object.freeze({ path: '../data/kfc-cn.json', expectedBrandId: 'kfc-cn', allowedHosts: ['login.kfc.com.cn'] }),
-    'starbucks': Object.freeze({ path: '../data/starbucks-cn.json', expectedBrandId: 'starbucks', allowedHosts: ['www.starbucks.com.cn'] })
+    'burger-king-cn': Object.freeze({ allowedHosts: Object.freeze(['bkchina.cn']) }),
+    'kfc-cn': Object.freeze({ allowedHosts: Object.freeze(['login.kfc.com.cn']) }),
+    'mcd-cn': Object.freeze({ allowedHosts: Object.freeze(['www.mcdonalds.com.cn']) }),
+    'starbucks': Object.freeze({ allowedHosts: Object.freeze(['www.starbucks.com.cn']) })
   });
+  const TOP_KEYS = Object.freeze(['kind', 'schemaVersion', 'sources']);
+  const SOURCE_KEYS = Object.freeze(['brandId', 'capturedAt', 'market', 'rows']);
+  const ROW_KEYS = Object.freeze(['id', 'sourceUrl', 'title']);
 
-  const ACTIONABLE_PATTERN = /(￥|¥|\d+(?:\.\d+)?\s*元|优惠|特惠|优惠券|领券|买.{0,8}送|免费|兑换|权益|会员|早餐|下午茶|超值|coupon|\boff\b|free)/i;
-
-  function cleanText(value, max) {
-    return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+  function sameKeys(value, allowed) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    return keys.length === allowed.length && keys.every((key, index) => key === allowed[index]);
   }
 
-  function parseCandidateSnapshot(snapshot, { expectedBrandId, allowedHosts, nowMs = Date.now(), freshMs = 36 * 3600 * 1000, maxAgeMs = 7 * 24 * 3600 * 1000 } = {}) {
-    if (!snapshot || typeof snapshot !== 'object') throw new TypeError('snapshot must be an object');
-    if (snapshot.schemaVersion !== 1) throw new Error('unsupported snapshot schema');
-    if (snapshot.brandId !== expectedBrandId) throw new Error('snapshot brand mismatch');
-    if (snapshot.market !== 'China') throw new Error('snapshot market mismatch');
-    const capturedAtMs = Date.parse(snapshot.capturedAt);
-    if (!Number.isFinite(capturedAtMs) || capturedAtMs > nowMs + 5 * 60 * 1000) throw new Error('invalid snapshot capture time');
-    if (!Array.isArray(snapshot.rows) || snapshot.rows.length > 100) throw new Error('invalid snapshot rows');
+  function cleanText(value, max) {
+    if (typeof value !== 'string') return '';
+    const text = value.trim();
+    if (!text || text.length > max || /[\u0000-\u001f\u007f]/u.test(text)) return '';
+    return text;
+  }
+
+  function parseCandidateReadModel(model, { brandId, nowMs = Date.now(), freshMs = 36 * 3600 * 1000, maxAgeMs = 7 * 24 * 3600 * 1000 } = {}) {
+    const route = ROUTES[brandId];
+    if (!route) throw new Error('unsupported candidate brand');
+    if (!sameKeys(model, TOP_KEYS)) throw new Error('candidate read model fields are invalid');
+    if (model.schemaVersion !== 1 || model.kind !== 'stackback_candidate_read_model') throw new Error('unsupported candidate read model schema');
+    if (!Array.isArray(model.sources) || model.sources.length < 1 || model.sources.length > Object.keys(ROUTES).length) throw new Error('invalid candidate sources');
+
+    const seenSources = new Set();
+    let selected = null;
+    for (const source of model.sources) {
+      if (!sameKeys(source, SOURCE_KEYS)) throw new Error('candidate source fields are invalid');
+      const sourceBrandId = cleanText(source.brandId, 80);
+      if (!sourceBrandId || !ROUTES[sourceBrandId]) throw new Error('unknown candidate source brand');
+      if (seenSources.has(sourceBrandId)) throw new Error('duplicate source brand');
+      seenSources.add(sourceBrandId);
+      if (sourceBrandId === brandId) selected = source;
+    }
+
+    if (!selected) return Object.freeze({ freshness: 'unavailable', capturedAt: null, rows: Object.freeze([]) });
+    if (selected.market !== 'China') throw new Error('candidate source market mismatch');
+    const capturedAtMs = Date.parse(selected.capturedAt);
+    if (!Number.isFinite(capturedAtMs) || capturedAtMs > nowMs + 5 * 60 * 1000) throw new Error('invalid candidate capture time');
+    if (!Array.isArray(selected.rows) || selected.rows.length > 100) throw new Error('invalid candidate rows');
+
     const age = Math.max(0, nowMs - capturedAtMs);
     const freshness = age <= freshMs ? 'fresh' : age <= maxAgeMs ? 'stale' : 'expired';
-    const hosts = new Set((allowedHosts || []).map((host) => String(host).toLowerCase()));
+    const allowedHosts = new Set(route.allowedHosts);
     const ids = new Set();
+    const urls = new Set();
     const rows = [];
-    for (const raw of snapshot.rows) {
-      if (!raw || typeof raw !== 'object') throw new Error('invalid offer row');
+
+    for (const raw of selected.rows) {
+      if (!sameKeys(raw, ROW_KEYS)) throw new Error('candidate row fields are invalid');
       const id = cleanText(raw.id, 120);
       const title = cleanText(raw.title, 220);
       const sourceUrl = cleanText(raw.sourceUrl, 500);
-      if (!id || !title || !sourceUrl || ids.has(id)) throw new Error('invalid or duplicate offer row');
-      const url = new URL(sourceUrl);
-      if (url.protocol !== 'https:' || !hosts.has(url.hostname.toLowerCase())) throw new Error('offer source is outside allowed official host');
+      if (!id || !title || !sourceUrl || ids.has(id)) throw new Error('invalid or duplicate candidate row');
+
+      let url;
+      try { url = new URL(sourceUrl); } catch { throw new Error('candidate source URL is invalid'); }
+      if (url.protocol !== 'https:') throw new Error('candidate source URL must use HTTPS');
+      if (url.username || url.password || url.port || url.hash) throw new Error('candidate source URL must be canonical HTTPS');
+      if (!allowedHosts.has(url.hostname.toLowerCase())) throw new Error('candidate source is outside allowed official host');
+      const canonicalUrl = url.toString();
+      if (urls.has(canonicalUrl)) throw new Error('duplicate candidate source URL');
+
       ids.add(id);
-      if (ACTIONABLE_PATTERN.test(title)) rows.push(Object.freeze({ id, title, sourceUrl: url.toString(), status: 'candidate' }));
+      urls.add(canonicalUrl);
+      rows.push(Object.freeze({ id, title, sourceUrl: canonicalUrl, status: 'candidate' }));
     }
-    return Object.freeze({ freshness, capturedAt: new Date(capturedAtMs).toISOString(), rows: Object.freeze(freshness === 'expired' ? [] : rows.slice(0, 5)) });
+
+    return Object.freeze({
+      freshness,
+      capturedAt: new Date(capturedAtMs).toISOString(),
+      rows: Object.freeze(freshness === 'expired' ? [] : rows.slice(0, 5))
+    });
   }
 
   function isLikelyChina(location) {
@@ -753,22 +797,21 @@
   function createOfferProvider({ fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
     if (typeof fetchImpl !== 'function') throw new TypeError('fetch is required');
     return async function findOffers({ brandId, location } = {}) {
-      const route = ROUTES[brandId];
-      if (!route) return Object.freeze({ freshness: 'unsupported', rows: [] });
+      if (!ROUTES[brandId]) return Object.freeze({ freshness: 'unsupported', rows: [] });
       if (!isLikelyChina(location)) return Object.freeze({ freshness: 'outside-coverage', rows: [] });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetchImpl(route.path, { signal: controller.signal, headers: { Accept: 'application/json' }, cache: 'no-store' });
+        const response = await fetchImpl(READ_MODEL_PATH, { signal: controller.signal, headers: { Accept: 'application/json' }, cache: 'no-store' });
         if (!response.ok) throw new Error(`优惠数据 HTTP ${response.status}`);
-        return parseCandidateSnapshot(await response.json(), route);
+        return parseCandidateReadModel(await response.json(), { brandId });
       } finally {
         clearTimeout(timer);
       }
     };
   }
 
-  return Object.freeze({ createOfferProvider, parseCandidateSnapshot, isLikelyChina });
+  return Object.freeze({ createOfferProvider, parseCandidateReadModel, isLikelyChina });
 });
 
 ;
