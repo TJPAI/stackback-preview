@@ -9,7 +9,7 @@
 </head>
 <body>
   <main class="shell">
-    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.3</div></div>
+    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.4</div></div>
     <section class="hero">
       <h1>现在怎么买，最省？</h1>
       <p>告诉 StackBack 你现在想买什么。先找附近门店，再把官方优惠、第一方核验条款和仍然未知的部分分开，给你一个能继续执行的答案。</p>
@@ -33,9 +33,10 @@
         <button class="chip" type="button" data-query="肯德基">肯德基</button>
         <button class="chip" type="button" data-query="星巴克">星巴克</button>
       </div>
-      <div class="note">麦当劳已加入第一方官方活动核验通道；成功/失败执行结果可在使用后本机记录。Candidate ≠ Confirmed；活动价 ≠ 节省金额；用户自报 ≠ 全局确认。</div>
+      <div class="note">麦当劳已加入第一方官方活动核验通道；成功/失败执行结果可在使用后本机记录并汇总。Candidate ≠ Confirmed；活动价 ≠ 节省金额；用户自报 ≠ 全局确认。</div>
     </form>
 
+    <section data-role="execution-ledger"></section>
     <section class="results" data-role="results"></section>
     <div class="footer">MVP 目标不是展示更多 Coupon，而是把“去哪 → 省多少 → 怎么省 → 是否可靠 → 实际是否成功”逐步做成真实执行闭环。</div>
   </main>

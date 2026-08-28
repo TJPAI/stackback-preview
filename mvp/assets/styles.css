@@ -22,7 +22,7 @@ a { color: inherit; }
 .hero { margin-bottom: 22px; }
 .hero h1 { font-size: clamp(36px, 9vw, 62px); line-height: .98; letter-spacing: -.055em; margin: 0 0 18px; max-width: 660px; }
 .hero p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.6; max-width: 620px; }
-.location-card, .search-card, .result-card, .status-card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); }
+.location-card, .search-card, .result-card, .status-card, .ledger-card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); }
 .location-card { padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 12px; }
 .location-copy { min-width: 0; }
 .location-title { font-weight: 750; margin-bottom: 4px; }
@@ -38,6 +38,14 @@ a { color: inherit; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .chip { padding: 8px 11px; background: #f2f4f1; color: #33433a; }
 .note { margin: 12px 4px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.ledger-card { margin-top: 12px; padding: 16px; }
+.ledger-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ledger-money { font-size: 23px; line-height: 1.1; font-weight: 850; letter-spacing: -.035em; }
+.ledger-session { flex: 0 0 auto; text-align: right; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.ledger-session strong { color: var(--ink); font-size: 20px; }
+.ledger-stats { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
+.ledger-stats span { background: #f1f3f0; color: #4e5b54; border-radius: 999px; padding: 6px 8px; font-size: 11px; }
+.ledger-empty { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .results { margin-top: 18px; }
 .status-card { padding: 18px; color: var(--muted); }
 .status-card.warning { color: var(--warn); }
@@ -83,4 +91,6 @@ a { color: inherit; }
   .location-card { align-items: flex-start; flex-direction: column; }
   .ghost-btn { width: 100%; }
   .result-card { padding: 17px; }
+  .ledger-head { flex-direction: column; gap: 8px; }
+  .ledger-session { text-align: left; }
 }

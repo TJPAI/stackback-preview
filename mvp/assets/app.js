@@ -340,6 +340,62 @@
 
 ;
 (function (root, factory) {
+  const execution = typeof module === 'object' && module.exports
+    ? require('./execution-report.js')
+    : root.StackBackMvp && root.StackBackMvp.ExecutionReport;
+  const api = factory(execution);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.ExecutionLedger = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (ExecutionReport) {
+  'use strict';
+
+  const SUMMARY_EVIDENCE_CLASS = 'user_reported_local_summary';
+  const MAX_INPUT_ROWS = 100;
+
+  function moneyFromCents(cents) {
+    return Object.freeze({ amount: Math.round(cents) / 100, currency: 'CNY' });
+  }
+
+  function summarizeExecutionReports(rows) {
+    if (!ExecutionReport || typeof ExecutionReport.normalizeStoredReport !== 'function') throw new Error('ExecutionReport domain is required');
+    if (!Array.isArray(rows)) throw new TypeError('执行历史必须是数组');
+
+    const safe = rows
+      .slice(0, MAX_INPUT_ROWS)
+      .map((row) => ExecutionReport.normalizeStoredReport(row))
+      .filter(Boolean);
+
+    let successfulRedemptions = 0;
+    let failedAttempts = 0;
+    let quantifiedSavingsSessions = 0;
+    let savingsCents = 0;
+
+    for (const report of safe) {
+      if (report.outcome === 'success') successfulRedemptions += 1;
+      else if (report.outcome === 'failure') failedAttempts += 1;
+
+      if (report.successfulSavingsSession && report.selfReportedDifference && report.selfReportedDifference.currency === 'CNY') {
+        quantifiedSavingsSessions += 1;
+        savingsCents += Math.round(Number(report.selfReportedDifference.amount) * 100);
+      }
+    }
+
+    return Object.freeze({
+      evidenceClass: SUMMARY_EVIDENCE_CLASS,
+      attempts: safe.length,
+      successfulRedemptions,
+      failedAttempts,
+      quantifiedSavingsSessions,
+      selfReportedSavings: moneyFromCents(savingsCents)
+    });
+  }
+
+  return Object.freeze({ summarizeExecutionReports, SUMMARY_EVIDENCE_CLASS });
+});
+
+;
+(function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
@@ -876,6 +932,25 @@
     return `<div class="execution-receipt success"><strong>已记录：本次成功使用（用户自报）</strong><div>你报告实付 ${escapeHtml(paid)}。由于没有可靠的可比较常规价，本次不计算省额，也不计入量化 Successful Savings Session。</div></div>`;
   }
 
+  function renderExecutionLedger(summary) {
+    if (!summary || summary.evidenceClass !== 'user_reported_local_summary') {
+      return '<section class="ledger-card"><div class="support-title">本机自报省钱账本</div><div class="answer-sub">当前浏览器无法读取本机执行记录；这不会影响优惠推荐。</div></section>';
+    }
+    const total = summary.selfReportedSavings && summary.selfReportedSavings.currency === 'CNY'
+      ? formatMoney(summary.selfReportedSavings.amount, 'CNY')
+      : '¥0';
+    const empty = summary.attempts === 0
+      ? '<div class="ledger-empty">还没有执行记录。实际使用一次核验优惠后，可在这里看到本机闭环结果。</div>'
+      : '';
+    return `
+      <section class="ledger-card">
+        <div class="ledger-head"><div><div class="support-title">本机自报省钱账本</div><div class="ledger-money">累计自报少付 ${escapeHtml(total)}</div></div><div class="ledger-session">量化 Successful Savings Session<br><strong>${escapeHtml(summary.quantifiedSavingsSessions)}</strong> 次</div></div>
+        <div class="ledger-stats"><span>尝试 ${escapeHtml(summary.attempts)} 次</span><span>成功核销 ${escapeHtml(summary.successfulRedemptions)} 次</span><span>未成功 ${escapeHtml(summary.failedAttempts)} 次</span></div>
+        ${empty}
+        <div class="local-note">只汇总通过证据校验的 user_reported_local 记录；累计少付金额来自你提供的可比较价格，不会升级为 StackBack 的全局可靠省额。</div>
+      </section>`;
+  }
+
   function renderPlan(plan) {
     const where = plan.store
       ? `<div class="answer-main">${escapeHtml(plan.store.name)}</div><div class="answer-sub">${escapeHtml(formatDistance(plan.store.distanceMeters))}${plan.store.address ? ` · ${escapeHtml(plan.store.address)}` : ''}</div>`
@@ -920,7 +995,7 @@
       </section>`;
   }
 
-  return Object.freeze({ renderPlan, renderExecutionReceipt, formatDistance, formatPrice, formatMoney, escapeHtml });
+  return Object.freeze({ renderPlan, renderExecutionReceipt, renderExecutionLedger, formatDistance, formatPrice, formatMoney, escapeHtml });
 });
 
 ;
@@ -928,7 +1003,7 @@
   'use strict';
 
   const S = globalThis.StackBackMvp;
-  if (!S || !S.Decision || !S.ExecutionReport || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.LocalExecutionStore || !S.FindSavings || !S.RecordExecution || !S.Render) throw new Error('StackBack MVP modules are incomplete');
+  if (!S || !S.Decision || !S.ExecutionReport || !S.ExecutionLedger || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.LocalExecutionStore || !S.FindSavings || !S.RecordExecution || !S.Render) throw new Error('StackBack MVP modules are incomplete');
 
   const storeProvider = S.OsmStores.createStoreProvider();
   const offerProvider = S.PreviewOffers.createOfferProvider();
@@ -951,6 +1026,7 @@
     form: document.querySelector('[data-role="search-form"]'),
     input: document.querySelector('[data-role="query"]'),
     submit: document.querySelector('[data-action="search"]'),
+    ledger: document.querySelector('[data-role="execution-ledger"]'),
     results: document.querySelector('[data-role="results"]'),
     chips: Array.from(document.querySelectorAll('[data-query]'))
   };
@@ -965,6 +1041,20 @@
   function showMessage(message, tone = 'neutral') {
     state.currentPlan = null;
     el.results.innerHTML = `<div class="status-card ${tone}">${S.Render.escapeHtml(message)}</div>`;
+  }
+
+  function readLedger() {
+    if (!executionStore) return null;
+    try {
+      return S.ExecutionLedger.summarizeExecutionReports(executionStore.list());
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshLedger() {
+    if (!el.ledger) return;
+    el.ledger.innerHTML = S.Render.renderExecutionLedger(readLedger());
   }
 
   function bindExecutionFeedback() {
@@ -989,6 +1079,7 @@
           }
         });
         output.innerHTML = S.Render.renderExecutionReceipt(report);
+        refreshLedger();
       } catch (error) {
         output.innerHTML = `<div class="execution-receipt warning">${S.Render.escapeHtml(error && error.message ? error.message : '执行反馈未保存')}</div>`;
       }
@@ -1042,5 +1133,6 @@
     el.input.value = chip.dataset.query || '';
     if (state.location) search(); else locate();
   }));
+  refreshLedger();
   setBusy(false);
 })();
