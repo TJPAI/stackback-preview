@@ -214,6 +214,84 @@ function rankOffersForDemand({ offers, demand, now = new Date() } = {}) {
 }
 
 
+const RECOMMENDABLE_TRUST = new Set(['verified', 'recommendable']);
+
+function finiteNonNegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function validSaving(value) {
+  return value === null || value === undefined || finiteNonNegative(value);
+}
+
+function savingKnown(offer) {
+  return finiteNonNegative(offer.savingAmountCents);
+}
+
+function normalizeCandidate(offer) {
+  if (!offer || typeof offer !== 'object') return null;
+  if (typeof offer.id !== 'string' || offer.id.trim() === '') return null;
+  if (!RECOMMENDABLE_TRUST.has(offer.trustStatus)) return null;
+  if (!finiteNonNegative(offer.distanceMeters)) return null;
+  if (!validSaving(offer.savingAmountCents)) return null;
+  if (!finiteNonNegative(offer.frictionScore)) return null;
+  if (!finiteNonNegative(offer.preferenceScore)) return null;
+  return offer;
+}
+
+function compareSaving(a, b) {
+  const aKnown = savingKnown(a);
+  const bKnown = savingKnown(b);
+  if (aKnown && bKnown) return b.savingAmountCents - a.savingAmountCents;
+  if (aKnown !== bKnown) return aKnown ? -1 : 1;
+  return 0;
+}
+
+function compare(a, b) {
+  return a.distanceMeters - b.distanceMeters
+    || compareSaving(a, b)
+    || a.frictionScore - b.frictionScore
+    || b.preferenceScore - a.preferenceScore
+    || a.id.localeCompare(b.id);
+}
+
+function rankNearbyOffers(offers = []) {
+  if (!Array.isArray(offers)) throw new TypeError('offers must be an array');
+
+  const seen = new Set();
+  const eligible = [];
+  for (const row of offers) {
+    const offer = normalizeCandidate(row);
+    if (!offer || seen.has(offer.id)) continue;
+    seen.add(offer.id);
+    eligible.push(offer);
+  }
+
+  eligible.sort(compare);
+  if (eligible.length === 0) return Object.freeze([]);
+
+  const minDistance = Math.min(...eligible.map((offer) => offer.distanceMeters));
+  const knownSavings = eligible.filter(savingKnown).map((offer) => offer.savingAmountCents);
+  const maxSaving = knownSavings.length ? Math.max(...knownSavings) : null;
+  const minFriction = Math.min(...eligible.map((offer) => offer.frictionScore));
+
+  return Object.freeze(eligible.map((offer, index) => {
+    const reasonCodes = ['trusted'];
+    if (offer.distanceMeters === minDistance) reasonCodes.push('nearer');
+    if (savingKnown(offer) && offer.savingAmountCents === maxSaving) reasonCodes.push('higher_saving');
+    if (!savingKnown(offer)) reasonCodes.push('saving_unknown');
+    if (offer.frictionScore === minFriction) reasonCodes.push('lower_friction');
+    if (offer.preferenceScore > 0) reasonCodes.push('preference_match');
+
+    return Object.freeze({
+      offer,
+      rank: index + 1,
+      reasonCodes: Object.freeze(reasonCodes)
+    });
+  }));
+}
+
+
 const OUTCOMES = new Set(['shown', 'not_shown']);
 const issuedChecks = new WeakSet();
 
@@ -399,6 +477,160 @@ function createExecutionFeedback({ outcome, offerId, storeId, actualPaid = null,
 
 
 
+function cleanNearbyText(value, max) {
+  if (typeof value !== 'string') return '';
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return cleaned.length > 0 && cleaned.length <= max ? cleaned : '';
+}
+
+function normalizeNearbyStore(raw) {
+  if (!raw || typeof raw !== 'object' || raw.confirmation !== 'candidate') return null;
+  const id = cleanNearbyText(raw.id, 120);
+  const name = cleanNearbyText(raw.name, 120);
+  const address = cleanNearbyText(raw.address, 260);
+  const distanceKm = Number(raw.distanceKm);
+  const lat = Number(raw.lat);
+  const lon = Number(raw.lon);
+  if (!id || !name || !Number.isFinite(distanceKm) || distanceKm < 0) return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return Object.freeze({
+    id,
+    name,
+    address,
+    distanceMeters: Math.round(distanceKm * 1000),
+    lat,
+    lon,
+    confirmation: 'candidate'
+  });
+}
+
+function nearbyCentsFromAmount(amount) {
+  return typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
+    ? Math.round(amount * 100)
+    : null;
+}
+
+function buildNearbyOfferReadModel({ offers = [], stores = [], now = new Date() } = {}) {
+  if (!Array.isArray(offers) || !Array.isArray(stores)) throw new TypeError('offers and stores must be arrays');
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('valid current time is required');
+
+  const trusted = [];
+  const seenOffers = new Set();
+  for (const raw of offers.slice(0, 8)) {
+    const offer = authorizeTrustedOffer(raw, { now });
+    if (!offer || seenOffers.has(offer.id)) continue;
+    seenOffers.add(offer.id);
+    trusted.push(offer);
+  }
+
+  const nearbyStores = [];
+  const seenStores = new Set();
+  for (const raw of stores) {
+    const store = normalizeNearbyStore(raw);
+    if (!store || seenStores.has(store.id)) continue;
+    seenStores.add(store.id);
+    nearbyStores.push(store);
+  }
+  nearbyStores.sort((a, b) => a.distanceMeters - b.distanceMeters || a.id.localeCompare(b.id));
+
+  const projections = [];
+  for (const offer of trusted) {
+    for (const store of nearbyStores.slice(0, 3)) {
+      projections.push(Object.freeze({
+        id: `${offer.id}::${store.id}`,
+        trustStatus: 'verified',
+        distanceMeters: store.distanceMeters,
+        savingAmountCents: null,
+        frictionScore: Array.isArray(offer.executionSteps) ? offer.executionSteps.length : 99,
+        preferenceScore: 0,
+        offer,
+        store
+      }));
+    }
+  }
+
+  const ranked = rankNearbyOffers(projections);
+  return Object.freeze(ranked.map((item) => Object.freeze({
+    id: item.offer.id,
+    rank: item.rank,
+    offerId: item.offer.offer.id,
+    title: item.offer.offer.title,
+    sourceUrl: item.offer.offer.sourceUrl,
+    offerTrustStatus: 'verified',
+    usabilityStatus: 'verification_required',
+    offerPrice: Object.freeze({
+      amount: item.offer.offer.offerPrice.amount,
+      amountCents: nearbyCentsFromAmount(item.offer.offer.offerPrice.amount),
+      currency: item.offer.offer.offerPrice.currency,
+      kind: item.offer.offer.offerPrice.kind,
+      qualifier: item.offer.offer.priceQualifier
+    }),
+    reliableSavings: Object.freeze({ known: false, amountCents: null, currency: null }),
+    distanceMeters: item.offer.distanceMeters,
+    store: Object.freeze({
+      id: item.offer.store.id,
+      name: item.offer.store.name,
+      address: item.offer.store.address,
+      lat: item.offer.store.lat,
+      lon: item.offer.store.lon,
+      confirmation: 'candidate'
+    }),
+    storeApplicability: Object.freeze({ status: 'unknown', globalConfirmed: false }),
+    validFrom: item.offer.offer.validFrom,
+    validThrough: item.offer.offer.validThrough,
+    executionSteps: Object.freeze([...item.offer.offer.executionSteps]),
+    reasonCodes: item.reasonCodes
+  })));
+}
+
+
+
+function nearbyDiscoveryBlocked(reason, detail = {}) {
+  return Object.freeze({ kind: 'blocked', reason, ...detail });
+}
+
+function normalizeDiscoveryLocation(raw) {
+  if (!raw || typeof raw !== 'object' || raw.hasPreciseLocation !== true) return null;
+  const lat = Number(raw.lat);
+  const lon = Number(raw.lon);
+  const accuracyMeters = Number(raw.accuracyMeters);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(accuracyMeters) || accuracyMeters < 0) return null;
+  return Object.freeze({ lat, lon, accuracyMeters, hasPreciseLocation: true });
+}
+
+function createNearbyDiscovery({ readLocation, isSupportedLocation, loadOffers, findStores, now = () => new Date() } = {}) {
+  if (typeof readLocation !== 'function' || typeof isSupportedLocation !== 'function' || typeof loadOffers !== 'function' || typeof findStores !== 'function' || typeof now !== 'function') {
+    throw new TypeError('nearby discovery dependencies are required');
+  }
+
+  async function discover() {
+    const rawLocation = await readLocation();
+    const location = normalizeDiscoveryLocation(rawLocation);
+    if (!location) {
+      return nearbyDiscoveryBlocked('low_accuracy', { accuracyMeters: Number(rawLocation && rawLocation.accuracyMeters) });
+    }
+    if (!isSupportedLocation(location)) return nearbyDiscoveryBlocked('unsupported_market');
+
+    const [offers, stores] = await Promise.all([loadOffers(), findStores(location)]);
+    if (!Array.isArray(offers) || offers.length === 0) return nearbyDiscoveryBlocked('no_offers');
+    if (!Array.isArray(stores) || stores.length === 0) return nearbyDiscoveryBlocked('no_stores');
+
+    const candidates = buildNearbyOfferReadModel({ offers, stores, now: now() });
+    if (!candidates.length) return nearbyDiscoveryBlocked('no_candidates');
+
+    return Object.freeze({
+      kind: 'nearby',
+      location,
+      candidates
+    });
+  }
+
+  return Object.freeze({ discover });
+}
+
+
+
+
 function freezePlanResult(plan) {
   return Object.freeze({ kind: 'plan', plan });
 }
@@ -409,6 +641,13 @@ function blocked(reason, detail = {}) {
 
 function defaultRank(offers) {
   return Object.freeze(offers.map((offer, index) => Object.freeze({ offer, rank: index + 1, score: 0, reasonCodes: Object.freeze([]) })));
+}
+
+function preferredFirst(items, preferredId, idOf) {
+  if (typeof preferredId !== 'string' || preferredId.length < 1 || preferredId.length > 180) return items;
+  const index = items.findIndex((item) => idOf(item) === preferredId);
+  if (index <= 0) return items;
+  return [items[index], ...items.slice(0, index), ...items.slice(index + 1)];
 }
 
 function createExecutionSession({
@@ -462,7 +701,7 @@ function createExecutionSession({
     return freezePlanResult(currentPlan);
   }
 
-  async function start({ demand: startDemand = activeDemand } = {}) {
+  async function start({ demand: startDemand = activeDemand, preferredOfferId = null, preferredStoreId = null } = {}) {
     rankedOffers = [];
     stores = [];
     offerIndex = 0;
@@ -489,6 +728,9 @@ function createExecutionSession({
       : defaultRank(offers);
     rankedOffers = Array.isArray(ranked) ? ranked.slice(0, 8) : [];
     if (!rankedOffers.length) return blocked('no_matching_offers');
+
+    rankedOffers = preferredFirst(rankedOffers, preferredOfferId, (item) => item && item.offer && item.offer.id);
+    stores = preferredFirst(stores, preferredStoreId, (item) => item && item.id);
     return buildCurrentPlan();
   }
 
@@ -806,24 +1048,127 @@ function section(row) {
   return `<div class="fact"><div class="fact-label">${esc(row.label)}</div><div class="fact-value">${esc(row.value)}</div></div>`;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function formatDistance(meters) {
+  const value = Number(meters);
+  if (!Number.isFinite(value) || value < 0) return '距离待确认';
+  if (value < 1000) return `${Math.round(value)}米`;
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}公里`;
+}
+
+function formatPrice(offerPrice) {
+  if (!offerPrice || !Number.isFinite(Number(offerPrice.amount))) return '价格待确认';
+  if (offerPrice.currency === 'CNY') return `¥${Number(offerPrice.amount)}`;
+  return `${Number(offerPrice.amount)} ${esc(offerPrice.currency || '')}`.trim();
+}
+
+function selectedCandidate(result, selectedCandidateId) {
+  const candidates = result && Array.isArray(result.candidates) ? result.candidates : [];
+  return candidates.find((item) => item.id === selectedCandidateId) || candidates[0] || null;
+}
+
+function pinPosition(location, store, stores) {
+  const lat0 = Number(location && location.lat);
+  const lon0 = Number(location && location.lon);
+  const lat = Number(store && store.lat);
+  const lon = Number(store && store.lon);
+  if (![lat0, lon0, lat, lon].every(Number.isFinite)) return Object.freeze({ left: 50, top: 50 });
+
+  const cosLat = Math.max(0.2, Math.cos(lat0 * Math.PI / 180));
+  const offsets = stores.map((row) => ({
+    x: (Number(row.lon) - lon0) * cosLat,
+    y: Number(row.lat) - lat0
+  })).filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y));
+  const maxSpan = Math.max(0.0002, ...offsets.flatMap((row) => [Math.abs(row.x), Math.abs(row.y)]));
+  const x = (lon - lon0) * cosLat;
+  const y = lat - lat0;
+  return Object.freeze({
+    left: clamp(50 + (x / maxSpan) * 38, 8, 92),
+    top: clamp(50 - (y / maxSpan) * 38, 8, 92)
+  });
+}
+
 function renderIdle(root) {
   root.innerHTML = `
     <section class="hero">
-      <div class="eyebrow">上海 · 麦当劳 · mMVP 0.9</div>
-      <h1>现在麦当劳怎么点更值？</h1>
-      <p>选一个大致需求。StackBack 只给一个当前最值得先核验的方案。</p>
+      <div class="eyebrow">PerksAid · V1</div>
+      <h1>附近现在有什么值得用？</h1>
+      <p>先用当前位置找附近已核验优惠，再决定哪一个值得去核验门店。</p>
       <label class="intent-field"><span>我现在想</span><select data-role="demand-goal"><option value="general_meal">随便吃点</option><option value="seafood_combo">吃海鲜堡套餐</option></select></label>
-      <button class="primary" data-action="locate">用当前位置找方案</button>
-      <div class="micro">只用本次位置判断附近门店；首版只验证上海麦当劳。</div>
+      <button class="primary" data-action="discover-nearby">查看附近优惠</button>
+      <div class="micro">位置只用于本次附近判断；当前数据覆盖仍从上海麦当劳验证链路逐步扩展。</div>
     </section>`;
 }
 
-function renderLoading(root, message = '正在匹配当前最值得先核验的方案…') {
-  root.innerHTML = `<section class="hero compact"><div class="spinner" aria-hidden="true"></div><h1>${esc(message)}</h1><p>先筛已核验权益，再结合你的需求和附近门店。不会把内部排序分数当成省钱金额。</p></section>`;
+function renderLoading(root, message = '正在匹配附近值得先看的优惠…') {
+  root.innerHTML = `<section class="hero compact"><div class="spinner" aria-hidden="true"></div><h1>${esc(message)}</h1><p>先筛已核验权益，再结合附近门店。不会把活动价或内部排序分数冒充成省钱金额。</p></section>`;
 }
 
 function renderError(root, title, detail) {
-  root.innerHTML = `<section class="hero"><div class="eyebrow">暂时不能给出可靠方案</div><h1>${esc(title)}</h1><p>${esc(detail)}</p><button class="primary" data-action="locate">重新定位</button></section>`;
+  root.innerHTML = `<section class="hero"><div class="eyebrow">暂时不能给出可靠方案</div><h1>${esc(title)}</h1><p>${esc(detail)}</p><button class="primary" data-action="discover-nearby">重新获取附近优惠</button></section>`;
+}
+
+function renderNearbyDiscovery(root, result, selectedCandidateId = null) {
+  const candidates = result && Array.isArray(result.candidates) ? result.candidates.slice(0, 8) : [];
+  const selected = selectedCandidate(result, selectedCandidateId);
+  if (!selected || candidates.length === 0) {
+    renderError(root, '附近暂时没有足够可靠的候选', 'PerksAid 不会用未经验证的优惠填空。');
+    return;
+  }
+
+  const uniqueStores = [];
+  const seenStores = new Set();
+  for (const item of candidates) {
+    if (!item.store || seenStores.has(item.store.id)) continue;
+    seenStores.add(item.store.id);
+    uniqueStores.push(item.store);
+  }
+  const selectedStoreId = selected.store && selected.store.id;
+  const pinHtml = uniqueStores.map((store) => {
+    const candidate = candidates.find((item) => item.store && item.store.id === store.id);
+    const pos = pinPosition(result.location, store, uniqueStores);
+    const active = store.id === selectedStoreId ? ' active' : '';
+    return `<button type="button" class="map-pin${active}" style="left:${pos.left.toFixed(1)}%;top:${pos.top.toFixed(1)}%" data-action="select-candidate" data-candidate-id="${esc(candidate.id)}" aria-label="选择${esc(store.name)}"><span>${esc(formatDistance(candidate.distanceMeters))}</span></button>`;
+  }).join('');
+
+  const cardHtml = candidates.map((item) => {
+    const active = item.id === selected.id;
+    return `<article class="deal-card${active ? ' selected' : ''}" data-candidate-id="${esc(item.id)}">
+      <div class="deal-card-top">
+        <div>
+          <div class="deal-trust">优惠已核验 · 门店需确认</div>
+          <h2>${esc(item.title)}</h2>
+        </div>
+        <div class="deal-distance">${esc(formatDistance(item.distanceMeters))}</div>
+      </div>
+      <div class="deal-store">${esc(item.store.name)}${item.store.address ? ` · ${esc(item.store.address)}` : ''}</div>
+      <div class="deal-metrics">
+        <div><span>当前活动价</span><strong>${formatPrice(item.offerPrice)}</strong></div>
+        <div><span>可靠可省</span><strong>待确认</strong></div>
+      </div>
+      <div class="deal-validity">有效期至 ${esc(item.validThrough)} · ${esc(item.offerPrice.qualifier || '具体以官方页面为准')}</div>
+      ${active
+        ? `<button type="button" class="primary candidate-action" data-action="verify-candidate" data-offer-id="${esc(item.offerId)}" data-store-id="${esc(item.store.id)}">核验这个方案</button>`
+        : `<button type="button" class="card-select" data-action="select-candidate" data-candidate-id="${esc(item.id)}">设为当前方案</button>`}
+    </article>`;
+  }).join('');
+
+  root.innerHTML = `
+    <section class="nearby-head">
+      <div><div class="eyebrow">当前位置附近</div><h1>先看这几个</h1></div>
+      <button class="location-refresh" type="button" data-action="discover-nearby">重新定位</button>
+    </section>
+    <section class="nearby-map" data-role="nearby-map" aria-label="附近优惠地图">
+      <div class="map-grid" aria-hidden="true"></div>
+      <div class="you-dot" style="left:50%;top:50%"><span>你</span></div>
+      ${pinHtml}
+      <div class="map-caption">附近位置关系 · 位置只用于本次计算</div>
+    </section>
+    <section class="deal-list" data-role="deal-list">${cardHtml}</section>
+    <div class="attribution">门店位置数据 © OpenStreetMap contributors</div>`;
 }
 
 function renderPlan(root, plan, vm) {
@@ -850,7 +1195,7 @@ function renderPlan(root, plan, vm) {
     </section>
     ${canFeedback ? `
     <section class="feedback-card">
-      <h2>用完告诉 StackBack 结果</h2>
+      <h2>用完告诉 PerksAid 结果</h2>
       <p>只记录这次活动 × 这家店，帮助后续判断现实执行质量，不自动升级成全局事实。</p>
       <form data-role="feedback-form">
         <label>结果<select name="outcome"><option value="success">成功使用</option><option value="failure">未成功</option></select></label>
@@ -860,7 +1205,7 @@ function renderPlan(root, plan, vm) {
       </form>
       <div data-role="feedback-result"></div>
     </section>` : ''}
-    <button class="text-button" data-action="locate">重新获取位置</button>
+    <button class="text-button" data-action="discover-nearby">返回附近优惠</button>
     <div class="attribution">门店数据 © OpenStreetMap contributors</div>`;
 }
 
@@ -880,74 +1225,132 @@ function renderFeedbackResult(root, record) {
 
 
 
+
 const root = document.querySelector('#app');
 const feedbackStore = createFeedbackStore();
+const storeProvider = createMcDonaldsStoreProvider();
+const discovery = createNearbyDiscovery({
+  readLocation: getCurrentLocation,
+  isSupportedLocation: isShanghai,
+  loadOffers: loadVerifiedMcDonaldsOffers,
+  findStores: storeProvider
+});
 const session = createExecutionSession({
   readLocation: getCurrentLocation,
   isSupportedLocation: isShanghai,
   loadOffers: loadVerifiedMcDonaldsOffers,
   rankOffers: rankOffersForDemand,
-  findStores: createMcDonaldsStoreProvider()
+  findStores: storeProvider
 });
 let lastGoal = 'general_meal';
+let lastDiscovery = null;
+let selectedCandidateId = null;
 
 function boundedGoal(value) {
   return value === 'seafood_combo' ? 'seafood_combo' : 'general_meal';
 }
 
-function present(result) {
-  if (result && result.kind === 'plan') {
-    renderPlan(root, result.plan, createPlanViewModel(result.plan));
-    return;
-  }
+function presentBlocked(result) {
   if (!result || result.kind !== 'blocked') {
     renderError(root, '这次没有得到可靠答案', '请稍后重新定位。');
     return;
   }
   if (result.reason === 'low_accuracy') {
     const accuracy = Number.isFinite(result.accuracyMeters) ? `当前定位约 ±${Math.round(result.accuracyMeters)} 米。` : '';
-    renderError(root, '定位精度还不够', `${accuracy}需要更精确的位置后，才能可靠地告诉你去哪家门店。`);
+    renderError(root, '定位精度还不够', `${accuracy}需要更精确的位置后，才能可靠判断附近门店。`);
   } else if (result.reason === 'unsupported_market') {
-    renderError(root, '首版先只做上海', 'mMVP 目前只验证上海麦当劳这一条完整闭环，不用泛化结果冒充本地答案。');
+    renderError(root, '当前可体验数据先覆盖上海', 'PerksAid V1 的产品范围包括上海和深圳，但深圳数据链路尚未完成时不会用泛化结果冒充本地答案。');
   } else if (result.reason === 'no_stores') {
-    renderError(root, '附近没有找到麦当劳候选门店', '这次没有足够可靠的附近门店数据，StackBack 不会凭空推荐。');
-  } else if (result.reason === 'no_offers' || result.reason === 'no_matching_offers') {
-    renderError(root, '现在没有适合这个需求的已核验权益', 'StackBack 不会用候选活动或过期权益填空。');
+    renderError(root, '附近没有找到足够可靠的门店候选', '这次没有足够可靠的附近门店数据，PerksAid 不会凭空推荐。');
+  } else if (result.reason === 'no_offers' || result.reason === 'no_matching_offers' || result.reason === 'no_candidates') {
+    renderError(root, '现在没有足够可靠的优惠候选', 'PerksAid 不会用未经核验或过期的活动填空。');
   } else if (result.reason === 'no_participating_candidates') {
-    renderError(root, '附近候选方案都没有确认到这个活动', '已经按当前匹配顺序检查过有限的活动 × 门店组合。StackBack 不会无限尝试或假装可用。');
+    renderError(root, '附近候选方案都没有确认到这个活动', '已经按有限的活动 × 门店组合核验。PerksAid 不会无限尝试或假装可用。');
   } else {
     renderError(root, '这次没有得到可靠答案', '请稍后重新定位。');
   }
 }
 
-async function locateAndPlan(goal = lastGoal) {
+function presentPlan(result) {
+  if (result && result.kind === 'plan') {
+    renderPlan(root, result.plan, createPlanViewModel(result.plan));
+    return;
+  }
+  presentBlocked(result);
+}
+
+async function discoverNearby(goal = lastGoal) {
   lastGoal = boundedGoal(goal);
   renderLoading(root);
   try {
-    present(await session.start({ demand: { market: 'China', brandId: 'mcd-cn', goal: lastGoal } }));
+    const result = await discovery.discover();
+    if (!result || result.kind !== 'nearby') {
+      lastDiscovery = null;
+      selectedCandidateId = null;
+      presentBlocked(result);
+      return;
+    }
+    lastDiscovery = result;
+    selectedCandidateId = result.candidates[0] ? result.candidates[0].id : null;
+    renderNearbyDiscovery(root, result, selectedCandidateId);
+  } catch (error) {
+    lastDiscovery = null;
+    selectedCandidateId = null;
+    renderError(root, '这次没有得到可靠答案', error && error.message ? error.message : '请稍后重新定位。');
+  }
+}
+
+async function verifyCandidate(preferredOfferId, preferredStoreId) {
+  renderLoading(root, '正在核验你选的方案…');
+  try {
+    presentPlan(await session.start({
+      demand: { market: 'China', brandId: 'mcd-cn', goal: lastGoal },
+      preferredOfferId,
+      preferredStoreId
+    }));
   } catch (error) {
     renderError(root, '这次没有得到可靠答案', error && error.message ? error.message : '请稍后重新定位。');
   }
 }
 
 root.addEventListener('click', (event) => {
-  const locate = event.target.closest('[data-action="locate"]');
-  if (locate) {
+  const discover = event.target.closest('[data-action="discover-nearby"]');
+  if (discover) {
     event.preventDefault();
     const selector = root.querySelector('[data-role="demand-goal"]');
-    locateAndPlan(selector ? selector.value : lastGoal);
+    discoverNearby(selector ? selector.value : lastGoal);
     return;
   }
+
+  const selectCandidate = event.target.closest('[data-action="select-candidate"]');
+  if (selectCandidate && lastDiscovery) {
+    event.preventDefault();
+    const candidateId = String(selectCandidate.dataset.candidateId || '');
+    if (lastDiscovery.candidates.some((item) => item.id === candidateId)) {
+      selectedCandidateId = candidateId;
+      renderNearbyDiscovery(root, lastDiscovery, selectedCandidateId);
+    }
+    return;
+  }
+
+  const verify = event.target.closest('[data-action="verify-candidate"]');
+  if (verify) {
+    event.preventDefault();
+    verifyCandidate(String(verify.dataset.offerId || ''), String(verify.dataset.storeId || ''));
+    return;
+  }
+
   const shown = event.target.closest('[data-action="store-shown"]');
   if (shown) {
     event.preventDefault();
-    present(session.confirmCurrentStoreShown());
+    presentPlan(session.confirmCurrentStoreShown());
     return;
   }
+
   const notShown = event.target.closest('[data-action="store-not-shown"]');
   if (notShown) {
     event.preventDefault();
-    present(session.rejectCurrentStoreAndAdvance());
+    presentPlan(session.rejectCurrentStoreAndAdvance());
   }
 });
 
