@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="cache-control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="0">
+  <meta name="stackback-build" content="bc8802996d6c55cb">
   <meta name="color-scheme" content="dark">
   <title>StackBack</title>
   <style>
@@ -12,6 +16,22 @@
 </head>
 <body>
   <div id="app" aria-live="polite"></div>
-  <script type="module" src="./assets/app.js"></script>
+  <script>
+(() => {
+  const local = document.querySelector('meta[name="stackback-build"]')?.content;
+  if (!/^[a-f0-9]{16}$/.test(local || '')) return;
+  fetch('./version.json?b=' + Date.now(), { cache: 'no-store' })
+    .then(response => response.ok ? response.json() : null)
+    .then(remote => {
+      if (!remote || remote.schemaVersion !== 1 || !/^[a-f0-9]{16}$/.test(remote.buildId) || remote.buildId === local) return;
+      const next = new URL(location.href);
+      if (next.searchParams.get('v') === remote.buildId) return;
+      next.searchParams.set('v', remote.buildId);
+      location.replace(next.href);
+    })
+    .catch(() => {});
+})();
+</script>
+  <script type="module" src="./assets/app.bc8802996d6c55cb.js"></script>
 </body>
 </html>
