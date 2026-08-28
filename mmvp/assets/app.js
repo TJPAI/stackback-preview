@@ -117,7 +117,7 @@ function createExecutionFeedback({ outcome, offerId, storeId, actualPaid = null,
   if (outcome === 'success') {
     if (typeof actualPaid !== 'number') throw new TypeError('valid actual paid amount is required');
     const amount = actualPaid;
-    if (!Number.isFinite(amount) || amount < 0 || amount > 100000) throw new TypeError('valid actual paid amount is required');
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) throw new TypeError('valid actual paid amount is required');
     if (currency !== 'CNY') throw new TypeError('mMVP currently accepts CNY execution amounts only');
     return Object.freeze({
       schemaVersion: 1,
@@ -342,8 +342,15 @@ function createPlanViewModel(plan) {
     Object.freeze({ label: '是否可靠', value: plan.readiness === 'verification_required' ? '活动价已核验；门店适用与可靠省额仍待确认' : '待确认' })
   ]);
 
+  const needsStoreApplicability = Array.isArray(plan.blockers) && plan.blockers.includes('store_applicability');
+  const title = destination
+    ? needsStoreApplicability
+      ? `先确认 ${destination.name} 能否使用`
+      : `去 ${destination.name}`
+    : '先获取当前位置';
+
   return Object.freeze({
-    title: destination ? `先去 ${destination.name}` : '先获取当前位置',
+    title,
     reliableSavingsLabel: plan.reliableSavings && plan.reliableSavings.known ? money(plan.reliableSavings.amount, plan.reliableSavings.currency) : '暂不能可靠计算',
     primaryAction,
     secondaryActions: Object.freeze([]),
