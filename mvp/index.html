@@ -9,10 +9,10 @@
 </head>
 <body>
   <main class="shell">
-    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.1</div></div>
+    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.2</div></div>
     <section class="hero">
       <h1>现在怎么买，最省？</h1>
-      <p>告诉 StackBack 你现在想买什么。第一版先把最重要的一件事做通：基于当前位置找附近门店，并把真实官方优惠候选压成一个可执行下一步。</p>
+      <p>告诉 StackBack 你现在想买什么。先找附近门店，再把官方优惠、第一方核验条款和仍然未知的部分分开，给你一个能继续执行的答案。</p>
     </section>
 
     <section class="location-card">
@@ -33,11 +33,11 @@
         <button class="chip" type="button" data-query="肯德基">肯德基</button>
         <button class="chip" type="button" data-query="星巴克">星巴克</button>
       </div>
-      <div class="note">附近门店来自 OpenStreetMap。官方优惠候选目前先覆盖中国区的麦当劳、肯德基和星巴克；Candidate ≠ Confirmed，金额与叠加关系不能确认就保持未知。</div>
+      <div class="note">麦当劳已加入第一方官方活动核验通道；肯德基和星巴克目前仍以官方候选为主。Candidate ≠ Confirmed；活动价 ≠ 节省金额；附近门店 ≠ 该门店一定参与。</div>
     </form>
 
     <section class="results" data-role="results"></section>
-    <div class="footer">MVP 目标不是展示更多 Coupon，而是先把“去哪 → 怎么省 → 是否可靠”做成一次真的能点、能查、能继续执行的体验。</div>
+    <div class="footer">MVP 目标不是展示更多 Coupon，而是把“去哪 → 省多少 → 怎么省 → 是否可靠”逐步做成一次真实可执行的省钱决策。</div>
   </main>
   <script defer src="./assets/app.js"></script>
 </body>
