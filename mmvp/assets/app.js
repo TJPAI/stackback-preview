@@ -29,6 +29,57 @@ function getActiveTrustedOffer({ now = new Date() } = {}) {
 }
 
 
+const OUTCOMES = new Set(['shown', 'not_shown']);
+const issuedChecks = new WeakSet();
+
+function id(value) {
+  if (typeof value !== 'string') return '';
+  const cleaned = value.trim();
+  return cleaned && cleaned.length <= 120 && !/[\u0000-\u001f\u007f]/u.test(cleaned) ? cleaned : '';
+}
+
+function timestamp(value) {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function createSessionStoreCheck({ outcome, offerId, storeId, checkedAt } = {}) {
+  const safeOfferId = id(offerId);
+  const safeStoreId = id(storeId);
+  const safeTime = timestamp(checkedAt);
+  if (!OUTCOMES.has(outcome)) throw new TypeError('session store check outcome must be shown or not_shown');
+  if (!safeOfferId || !safeStoreId || !safeTime) throw new TypeError('exact offer, store and check time are required');
+
+  const record = Object.freeze({
+    schemaVersion: 1,
+    evidenceClass: 'user_confirmed_session',
+    scope: 'current_session',
+    globalConfirmed: false,
+    outcome,
+    offerId: safeOfferId,
+    storeId: safeStoreId,
+    checkedAt: safeTime
+  });
+  issuedChecks.add(record);
+  return record;
+}
+
+function isAuthorizedSessionStoreCheck(check, { offerId, storeId, outcome = 'shown' } = {}) {
+  return Boolean(
+    check &&
+    typeof check === 'object' &&
+    issuedChecks.has(check) &&
+    check.outcome === outcome &&
+    check.offerId === offerId &&
+    check.storeId === storeId &&
+    check.globalConfirmed === false &&
+    check.scope === 'current_session'
+  );
+}
+
+
+
 
 function text(value, max = 180) {
   if (typeof value !== 'string') return '';
@@ -63,17 +114,28 @@ function normalizeStore(store) {
   return Object.freeze({ storeId, name, address, distanceKm, confirmation: 'candidate' });
 }
 
-function createDecision({ offer, store, hasPreciseLocation = false } = {}) {
+function createDecision({ offer, store, hasPreciseLocation = false, sessionStoreCheck = null } = {}) {
   const trustedOffer = sameTrustedOffer(offer) ? TRUSTED_OFFER : null;
   const candidateStore = normalizeStore(store);
   const destination = hasPreciseLocation && candidateStore ? candidateStore : null;
+  const sessionApplicable = Boolean(
+    trustedOffer &&
+    destination &&
+    isAuthorizedSessionStoreCheck(sessionStoreCheck, {
+      offerId: trustedOffer.id,
+      storeId: destination.storeId,
+      outcome: 'shown'
+    })
+  );
+
   const blockers = [];
   if (!hasPreciseLocation) blockers.push('precise_location');
   if (hasPreciseLocation && !candidateStore) blockers.push('store_candidate');
-  if (destination) blockers.push('store_applicability');
+  if (destination && !sessionApplicable) blockers.push('store_applicability');
   blockers.push('savings_baseline');
   if (!trustedOffer) blockers.unshift('verified_offer');
 
+  const readyToExecute = Boolean(trustedOffer && destination && sessionApplicable);
   return Object.freeze({
     kind: 'mmvp_savings_plan',
     destination,
@@ -82,14 +144,25 @@ function createDecision({ offer, store, hasPreciseLocation = false } = {}) {
       ? Object.freeze({ amount: trustedOffer.offerPrice.amount, currency: trustedOffer.offerPrice.currency, kind: trustedOffer.offerPrice.kind, qualifier: trustedOffer.priceQualifier })
       : Object.freeze({ amount: null, currency: null, kind: null, qualifier: null }),
     reliableSavings: Object.freeze({ known: false, amount: null, currency: null }),
+    storeApplicability: Object.freeze({
+      status: sessionApplicable ? 'user_confirmed_session' : 'unknown',
+      globalConfirmed: false,
+      checkedAt: sessionApplicable ? sessionStoreCheck.checkedAt : null
+    }),
     executionSteps: Object.freeze(trustedOffer ? [...trustedOffer.executionSteps] : []),
-    readiness: 'verification_required',
+    readiness: readyToExecute ? 'ready_to_execute' : 'verification_required',
     blockers: Object.freeze(blockers),
-    primaryAction: Object.freeze({
-      kind: 'verify_official_offer',
-      label: '打开官方活动确认',
-      url: trustedOffer ? trustedOffer.sourceUrl : TRUSTED_OFFER.sourceUrl
-    })
+    primaryAction: Object.freeze(readyToExecute
+      ? {
+          kind: 'continue_official_order',
+          label: '继续在官方渠道下单',
+          url: trustedOffer.sourceUrl
+        }
+      : {
+          kind: 'verify_official_offer',
+          label: '打开官方活动确认',
+          url: trustedOffer ? trustedOffer.sourceUrl : TRUSTED_OFFER.sourceUrl
+        })
   });
 }
 
@@ -148,6 +221,89 @@ function createExecutionFeedback({ outcome, offerId, storeId, actualPaid = null,
   }
 
   throw new TypeError('execution outcome must be success or failure');
+}
+
+
+
+
+function freezePlanResult(plan) {
+  return Object.freeze({ kind: 'plan', plan });
+}
+
+function blocked(reason, detail = {}) {
+  return Object.freeze({ kind: 'blocked', reason, ...detail });
+}
+
+function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, findStores, now = () => new Date() } = {}) {
+  if (typeof readLocation !== 'function' || typeof isSupportedLocation !== 'function' || typeof loadOffer !== 'function' || typeof findStores !== 'function' || typeof now !== 'function') {
+    throw new TypeError('mMVP execution session dependencies are required');
+  }
+
+  let offer = null;
+  let stores = [];
+  let storeIndex = 0;
+  let storeCheck = null;
+  let currentPlan = null;
+
+  function buildCurrentPlan() {
+    const store = stores[storeIndex] || null;
+    if (!offer || !store) {
+      currentPlan = null;
+      return blocked('no_participating_candidates', { checkedCount: storeIndex });
+    }
+    currentPlan = createDecision({ offer, store, hasPreciseLocation: true, sessionStoreCheck: storeCheck });
+    return freezePlanResult(currentPlan);
+  }
+
+  async function start() {
+    offer = null;
+    stores = [];
+    storeIndex = 0;
+    storeCheck = null;
+    currentPlan = null;
+
+    const location = await readLocation();
+    if (!location || !location.hasPreciseLocation) {
+      return blocked('low_accuracy', { accuracyMeters: Number(location && location.accuracyMeters) });
+    }
+    if (!isSupportedLocation(location)) return blocked('unsupported_market');
+
+    const [loadedOffer, foundStores] = await Promise.all([loadOffer(), findStores(location)]);
+    if (!Array.isArray(foundStores) || foundStores.length === 0) return blocked('no_stores');
+    offer = loadedOffer;
+    stores = [...foundStores];
+    return buildCurrentPlan();
+  }
+
+  function confirmCurrentStoreShown() {
+    if (!currentPlan || !currentPlan.offer || !currentPlan.destination) throw new Error('no current store to confirm');
+    storeCheck = createSessionStoreCheck({
+      outcome: 'shown',
+      offerId: currentPlan.offer.id,
+      storeId: currentPlan.destination.storeId,
+      checkedAt: now().toISOString()
+    });
+    return buildCurrentPlan();
+  }
+
+  function rejectCurrentStoreAndAdvance() {
+    if (!currentPlan || !currentPlan.offer || !currentPlan.destination) throw new Error('no current store to reject');
+    createSessionStoreCheck({
+      outcome: 'not_shown',
+      offerId: currentPlan.offer.id,
+      storeId: currentPlan.destination.storeId,
+      checkedAt: now().toISOString()
+    });
+    storeIndex += 1;
+    storeCheck = null;
+    return buildCurrentPlan();
+  }
+
+  function getCurrentPlan() {
+    return currentPlan;
+  }
+
+  return Object.freeze({ start, confirmCurrentStoreShown, rejectCurrentStoreAndAdvance, getCurrentPlan });
 }
 
 
@@ -330,23 +486,29 @@ function createPlanViewModel(plan) {
   const price = plan.offerPrice || {};
   const destination = plan.destination;
   const offer = plan.offer || {};
-  const primaryAction = plan.primaryAction && plan.primaryAction.kind === 'verify_official_offer'
-    ? Object.freeze({ ...plan.primaryAction })
-    : Object.freeze({ kind: 'verify_official_offer', label: '打开官方活动确认', url: offer.sourceUrl || null });
+  const allowedAction = plan.primaryAction && ['verify_official_offer', 'continue_official_order'].includes(plan.primaryAction.kind)
+    ? plan.primaryAction
+    : { kind: 'verify_official_offer', label: '打开官方活动确认', url: offer.sourceUrl || null };
+  const primaryAction = Object.freeze({ ...allowedAction });
+
+  const sessionConfirmed = plan.storeApplicability && plan.storeApplicability.status === 'user_confirmed_session';
+  const reliability = sessionConfirmed
+    ? '活动价已核验；本店仅为本次由你在官方点购页确认；可靠省额仍待确认'
+    : '活动价已核验；门店适用与可靠省额仍待确认';
 
   const sections = Object.freeze([
     Object.freeze({ label: '去哪', value: destination ? `${destination.name}${destination.distanceKm != null ? ` · ${destination.distanceKm.toFixed(2)} km` : ''}` : '先获取精确位置' }),
     Object.freeze({ label: '怎么买', value: offer.title || '活动待核验' }),
     Object.freeze({ label: '当前价格', value: price.amount == null ? '待核验' : `${money(price.amount, price.currency)}${price.kind === 'starting_bundle_price' ? ' 起' : ''}${price.qualifier ? ` · ${price.qualifier}` : ''}` }),
     Object.freeze({ label: '怎么操作', value: Array.isArray(plan.executionSteps) && plan.executionSteps.length ? plan.executionSteps.join(' → ') : '先打开官方活动确认' }),
-    Object.freeze({ label: '是否可靠', value: plan.readiness === 'verification_required' ? '活动价已核验；门店适用与可靠省额仍待确认' : '待确认' })
+    Object.freeze({ label: '是否可靠', value: reliability })
   ]);
 
   const needsStoreApplicability = Array.isArray(plan.blockers) && plan.blockers.includes('store_applicability');
   const title = destination
     ? needsStoreApplicability
       ? `先确认 ${destination.name} 能否使用`
-      : `去 ${destination.name}`
+      : `去 ${destination.name}，按活动价下单`
     : '先获取当前位置';
 
   return Object.freeze({
@@ -354,6 +516,15 @@ function createPlanViewModel(plan) {
     reliableSavingsLabel: plan.reliableSavings && plan.reliableSavings.known ? money(plan.reliableSavings.amount, plan.reliableSavings.currency) : '暂不能可靠计算',
     primaryAction,
     secondaryActions: Object.freeze([]),
+    storeCheck: Object.freeze({
+      visible: Boolean(destination && needsStoreApplicability),
+      question: destination ? `在官方点购页选择 ${destination.name} 后，这个活动显示了吗？` : null,
+      shownLabel: '本店显示活动',
+      notShownLabel: '没有显示，换下一家'
+    }),
+    trustNote: sessionConfirmed
+      ? '活动价由 StackBack 核验；本店参与仅是你在本次官方点购页的即时确认，不会升级为全局门店事实。'
+      : '活动价由 StackBack 核验；附近门店仍需在官方点购页确认参加。',
     sections,
     blockers: Object.freeze(Array.isArray(plan.blockers) ? [...plan.blockers] : [])
   });
@@ -388,8 +559,16 @@ function renderError(root, title, detail) {
 }
 
 function renderPlan(root, plan, vm) {
-  const mapUrl = plan.destination && plan.destination.storeId && Number.isFinite(plan.destination.lat) ? null : null;
-  const canFeedback = Boolean(plan.destination && plan.offer);
+  const canFeedback = Boolean(plan.destination && plan.offer && plan.readiness === 'ready_to_execute');
+  const storeCheck = vm.storeCheck && vm.storeCheck.visible ? `
+      <div class="verification-card">
+        <div class="verification-title">${esc(vm.storeCheck.question)}</div>
+        <div class="verification-actions">
+          <button class="secondary" type="button" data-action="store-shown">${esc(vm.storeCheck.shownLabel)}</button>
+          <button class="quiet-button" type="button" data-action="store-not-shown">${esc(vm.storeCheck.notShownLabel)}</button>
+        </div>
+      </div>` : '';
+
   root.innerHTML = `
     <section class="answer">
       <div class="eyebrow">当前建议</div>
@@ -397,15 +576,16 @@ function renderPlan(root, plan, vm) {
       <div class="answer-grid">${vm.sections.map(section).join('')}</div>
       <div class="savings-line"><span>可靠可省</span><strong>${esc(vm.reliableSavingsLabel)}</strong></div>
       <a class="primary link" href="${esc(vm.primaryAction.url)}" target="_blank" rel="noopener noreferrer">${esc(vm.primaryAction.label)}</a>
-      <div class="trust-note">活动价已由 StackBack 固定事实边界核验；附近门店仍需在官方点购页确认参加。13.9 元活动价不等于“可靠省了多少”。</div>
+      ${storeCheck}
+      <div class="trust-note">${esc(vm.trustNote)} 13.9 元活动价不等于“可靠省了多少”。</div>
     </section>
     ${canFeedback ? `
     <section class="feedback-card">
-      <h2>实际用了以后，只记录结果</h2>
-      <p>这条反馈只绑定本次活动和这家候选门店，不会自动升级成全上海事实。</p>
+      <h2>用完告诉 StackBack 结果</h2>
+      <p>只记录这次活动 × 这家店，不会自动升级成全上海事实。</p>
       <form data-role="feedback-form">
         <label>结果<select name="outcome"><option value="success">成功使用</option><option value="failure">未成功</option></select></label>
-        <label>实际支付<input name="actualPaid" type="number" min="0" max="100000" step="0.01" inputmode="decimal" placeholder="成功时填写，例如 13.9"></label>
+        <label>实际支付<input name="actualPaid" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" placeholder="成功时填写，例如 13.9"></label>
         <label>失败原因<select name="reason"><option value="store_not_participating">门店不参加</option><option value="offer_not_shown">点购页未显示活动</option><option value="price_mismatch">价格不符</option><option value="offer_ended">活动显示结束</option><option value="other">其他</option></select></label>
         <button class="secondary" type="submit">记录本次结果</button>
       </form>
@@ -431,46 +611,70 @@ function renderFeedbackResult(root, record) {
 
 
 const root = document.querySelector('#app');
-const storeProvider = createMcDonaldsStoreProvider();
 const feedbackStore = createFeedbackStore();
-let currentPlan = null;
+const session = createExecutionSession({
+  readLocation: getCurrentLocation,
+  isSupportedLocation: isShanghai,
+  loadOffer: loadVerifiedMcDonaldsOffer,
+  findStores: createMcDonaldsStoreProvider()
+});
+
+function present(result) {
+  if (result && result.kind === 'plan') {
+    renderPlan(root, result.plan, createPlanViewModel(result.plan));
+    return;
+  }
+  if (!result || result.kind !== 'blocked') {
+    renderError(root, '这次没有得到可靠答案', '请稍后重新定位。');
+    return;
+  }
+  if (result.reason === 'low_accuracy') {
+    const accuracy = Number.isFinite(result.accuracyMeters) ? `当前定位约 ±${Math.round(result.accuracyMeters)} 米。` : '';
+    renderError(root, '定位精度还不够', `${accuracy}需要更精确的位置后，才能可靠地告诉你去哪家门店。`);
+  } else if (result.reason === 'unsupported_market') {
+    renderError(root, '首版先只做上海', 'mMVP 目前只验证上海麦当劳这一条完整闭环，不用泛化结果冒充本地答案。');
+  } else if (result.reason === 'no_stores') {
+    renderError(root, '附近没有找到麦当劳候选门店', '这次没有足够可靠的附近门店数据，StackBack 不会凭空推荐。');
+  } else if (result.reason === 'no_participating_candidates') {
+    renderError(root, '附近候选店都没有确认到这个活动', '刚才检查的候选门店都没有在官方点购页显示活动。StackBack 不会继续推荐它们。');
+  } else {
+    renderError(root, '这次没有得到可靠答案', '请稍后重新定位。');
+  }
+}
 
 async function locateAndPlan() {
-  currentPlan = null;
   renderLoading(root);
   try {
-    const location = await getCurrentLocation();
-    if (!location.hasPreciseLocation) {
-      renderError(root, '定位精度还不够', `当前定位约 ±${Math.round(location.accuracyMeters)} 米。需要更精确的位置后，才能可靠地告诉你去哪家门店。`);
-      return;
-    }
-    if (!isShanghai(location)) {
-      renderError(root, '首版先只做上海', 'mMVP 目前只验证上海麦当劳这一条完整闭环，不用泛化结果冒充本地答案。');
-      return;
-    }
-    const [offer, stores] = await Promise.all([
-      loadVerifiedMcDonaldsOffer(),
-      storeProvider(location)
-    ]);
-    const store = stores[0] || null;
-    const plan = createDecision({ offer, store, hasPreciseLocation: true });
-    currentPlan = plan;
-    renderPlan(root, plan, createPlanViewModel(plan));
+    present(await session.start());
   } catch (error) {
     renderError(root, '这次没有得到可靠答案', error && error.message ? error.message : '请稍后重新定位。');
   }
 }
 
 root.addEventListener('click', (event) => {
-  const action = event.target.closest('[data-action="locate"]');
-  if (!action) return;
-  event.preventDefault();
-  locateAndPlan();
+  const locate = event.target.closest('[data-action="locate"]');
+  if (locate) {
+    event.preventDefault();
+    locateAndPlan();
+    return;
+  }
+  const shown = event.target.closest('[data-action="store-shown"]');
+  if (shown) {
+    event.preventDefault();
+    present(session.confirmCurrentStoreShown());
+    return;
+  }
+  const notShown = event.target.closest('[data-action="store-not-shown"]');
+  if (notShown) {
+    event.preventDefault();
+    present(session.rejectCurrentStoreAndAdvance());
+  }
 });
 
 root.addEventListener('submit', (event) => {
   const form = event.target.closest('[data-role="feedback-form"]');
-  if (!form || !currentPlan || !currentPlan.offer || !currentPlan.destination) return;
+  const currentPlan = session.getCurrentPlan();
+  if (!form || !currentPlan || currentPlan.readiness !== 'ready_to_execute' || !currentPlan.offer || !currentPlan.destination) return;
   event.preventDefault();
   const data = new FormData(form);
   const outcome = String(data.get('outcome') || '');
