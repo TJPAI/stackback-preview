@@ -307,6 +307,108 @@ function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, 
 }
 
 
+const RightsClass = Object.freeze({
+  UNKNOWN: 'Unknown',
+  PUBLIC_OFFER: 'PublicOffer',
+  PERSONAL_BENEFIT: 'PersonalBenefit',
+  TRANSFERABLE_OFFER: 'TransferableOffer'
+});
+
+const registeredSources = new WeakSet();
+
+function defineSource(definition) {
+  const source = Object.freeze({ ...definition, grantsOfferTruth: false });
+  registeredSources.add(source);
+  return source;
+}
+
+const MCD_CN_OFFICIAL_SOURCE = defineSource({
+  id: 'mcd-cn-official-web',
+  owner: "McDonald's China",
+  brandId: 'mcd-cn',
+  market: 'China',
+  sourceType: 'official_web',
+  canonicalHost: 'www.mcdonalds.com.cn'
+});
+
+function cleanText(value, max = 500) {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return cleaned && cleaned.length <= max ? cleaned : null;
+}
+
+function cloneOfferPrice(value) {
+  if (!value || typeof value !== 'object') return null;
+  return Object.freeze({
+    amount: typeof value.amount === 'number' ? value.amount : null,
+    currency: cleanText(value.currency, 16),
+    kind: cleanText(value.kind, 80)
+  });
+}
+
+function cloneSteps(value) {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  const steps = value.map((item) => cleanText(item, 300));
+  if (steps.some((item) => !item)) return Object.freeze([]);
+  return Object.freeze(steps);
+}
+
+function createOfferObservation({ source, observedAt, row } = {}) {
+  if (!source || typeof source !== 'object' || !registeredSources.has(source)) throw new TypeError('registered source is required');
+  if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) throw new TypeError('valid observation time is required');
+  if (!row || typeof row !== 'object') throw new TypeError('offer observation row is required');
+
+  const candidate = Object.freeze({
+    id: cleanText(row.id, 160),
+    title: cleanText(row.title, 300),
+    sourceUrl: cleanText(row.sourceUrl, 800),
+    offerPrice: cloneOfferPrice(row.offerPrice),
+    priceQualifier: cleanText(row.priceQualifier, 500),
+    validFrom: cleanText(row.validFrom, 32),
+    validThrough: cleanText(row.validThrough, 32),
+    applicability: cleanText(row.applicability, 120),
+    stacking: cleanText(row.stacking, 120),
+    executionSteps: cloneSteps(row.executionSteps)
+  });
+
+  return Object.freeze({
+    kind: 'OfferObservation',
+    trust: 'untrusted',
+    sourceId: source.id,
+    sourceType: source.sourceType,
+    observedAt: observedAt.toISOString(),
+    brandCandidate: source.brandId,
+    marketCandidate: source.market,
+    rightsClass: RightsClass.UNKNOWN,
+    candidate
+  });
+}
+
+function nonNegative(value, name) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw new TypeError(`${name} must be finite and non-negative`);
+  return number;
+}
+
+function scoreAcquisitionPriority({ demand, potentialValue, coverageGap, freshnessUrgency, trustPotential, acquisitionCost } = {}) {
+  const cost = Number(acquisitionCost);
+  if (!Number.isFinite(cost) || cost <= 0) throw new TypeError('acquisitionCost must be finite and positive');
+  const score = (
+    nonNegative(demand, 'demand') *
+    nonNegative(potentialValue, 'potentialValue') *
+    nonNegative(coverageGap, 'coverageGap') *
+    nonNegative(freshnessUrgency, 'freshnessUrgency') *
+    nonNegative(trustPotential, 'trustPotential')
+  ) / cost;
+
+  return Object.freeze({
+    kind: 'internal_acquisition_priority',
+    score,
+    userFacingSavings: null
+  });
+}
+
+
 function getCurrentLocation({ geolocation = globalThis.navigator && globalThis.navigator.geolocation, timeoutMs = 10000 } = {}) {
   if (!geolocation || typeof geolocation.getCurrentPosition !== 'function') {
     return Promise.reject(new Error('当前浏览器不支持定位'));
@@ -406,9 +508,12 @@ function createMcDonaldsStoreProvider({ fetchImpl = globalThis.fetch, timeoutMs 
 
 
 
+
 const DEFAULT_URL = '../mvp/data/verified-mcd-cn.json';
 
-function exactCore(row) {
+function exactCore(observation) {
+  if (!observation || observation.kind !== 'OfferObservation' || observation.trust !== 'untrusted' || observation.sourceId !== MCD_CN_OFFICIAL_SOURCE.id) return false;
+  const row = observation.candidate;
   return Boolean(row &&
     row.id === TRUSTED_OFFER.id &&
     row.title === TRUSTED_OFFER.title &&
@@ -436,8 +541,12 @@ async function loadVerifiedMcDonaldsOffer({ fetchFn = globalThis.fetch, now = ()
     throw new Error('核验数据上下文不可信');
   }
   const matches = payload.rows.filter((row) => row && row.id === TRUSTED_OFFER.id);
-  if (matches.length !== 1 || !exactCore(matches[0])) throw new Error('核验数据与代码授权的可信事实不一致');
-  const active = getActiveTrustedOffer({ now: now() });
+  if (matches.length !== 1) throw new Error('核验数据与代码授权的可信事实不一致');
+
+  const observedAt = now();
+  const observation = createOfferObservation({ source: MCD_CN_OFFICIAL_SOURCE, observedAt, row: matches[0] });
+  if (!exactCore(observation)) throw new Error('核验数据与代码授权的可信事实不一致');
+  const active = getActiveTrustedOffer({ now: observedAt });
   if (!active) throw new Error('核验活动不在有效期内');
   return active;
 }
