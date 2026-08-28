@@ -1,31 +1,216 @@
 'use strict';
-const TRUSTED_OFFER = Object.freeze({
-  id: 'mcd-cn-mix-match-20260824',
-  brandId: 'mcd-cn',
-  market: 'China',
-  title: '随心配指定组合 13.9元起',
-  offerPrice: Object.freeze({ amount: 13.9, currency: 'CNY', kind: 'starting_bundle_price' }),
-  priceQualifier: '部分蓝区指定产品需另加1元，实际14.9元',
-  validFrom: '2026-08-24',
-  validThrough: '2026-09-15',
-  applicability: 'partial_restaurants',
-  stacking: 'not_allowed',
-  sourceUrl: 'https://www.mcdonalds.com.cn/news/20260824-BABBM/',
-  executionSteps: Object.freeze([
-    '先在麦当劳App或微信/支付宝小程序选择附近门店',
-    '早餐时段后进入到店取餐；也可使用车道取餐、自助点餐机或餐厅柜台',
-    '随心配选择1款粉区指定产品 + 1款蓝区指定产品',
-    '确认点购页显示13.9元；部分蓝区指定产品为14.9元',
-    '确认该门店参与后再下单，不与其他优惠叠加'
-  ])
-});
+const SOURCE_URL = 'https://www.mcdonalds.com.cn/news/20260824-BABBM/';
+const VALID_FROM = '2026-08-24';
+const VALID_THROUGH = '2026-09-15';
 
-function getActiveTrustedOffer({ now = new Date() } = {}) {
+const DEFINITIONS = Object.freeze([
+  Object.freeze({
+    id: 'mcd-cn-mix-match-20260824',
+    brandId: 'mcd-cn',
+    market: 'China',
+    title: '随心配指定组合 13.9元起',
+    sourceUrl: SOURCE_URL,
+    offerPrice: Object.freeze({ amount: 13.9, currency: 'CNY', kind: 'starting_bundle_price' }),
+    priceQualifier: '部分蓝区指定产品需另加1元，实际14.9元',
+    validFrom: VALID_FROM,
+    validThrough: VALID_THROUGH,
+    dailyWindow: null,
+    availabilityNote: '早餐时段后供应，具体以餐厅实际情况为准',
+    applicability: 'partial_restaurants',
+    stacking: 'not_allowed',
+    channels: Object.freeze(['麦当劳App到店取餐', '微信/支付宝小程序到店取餐', '车道取餐', '自助点餐机', '餐厅柜台']),
+    executionSteps: Object.freeze([
+      '先在麦当劳App或微信/支付宝小程序选择附近门店',
+      '早餐时段后进入到店取餐；也可使用车道取餐、自助点餐机或餐厅柜台',
+      '随心配选择1款粉区指定产品 + 1款蓝区指定产品',
+      '确认点购页显示13.9元；部分蓝区指定产品为14.9元',
+      '确认该门店参与后再下单，不与其他优惠叠加'
+    ])
+  }),
+  Object.freeze({
+    id: 'mcd-cn-seafood-milo-addon-20260824',
+    brandId: 'mcd-cn',
+    market: 'China',
+    title: '海鲜堡三件套 +3元换购美禄可可雪冰',
+    sourceUrl: SOURCE_URL,
+    offerPrice: Object.freeze({ amount: 3, currency: 'CNY', kind: 'addon_upgrade_price' }),
+    priceQualifier: '购买新加坡蟹酱海鲜堡三件套时，套餐内默认饮品+3元可换购为美禄可可雪冰',
+    validFrom: VALID_FROM,
+    validThrough: VALID_THROUGH,
+    dailyWindow: '10:30:00-23:59:59',
+    availabilityNote: '每日10:30-23:59:59，仅部分供应麦咖啡的麦当劳餐厅，且需在产品供应时段内',
+    applicability: 'partial_mccafe_restaurants',
+    stacking: 'not_allowed',
+    channels: Object.freeze(['麦当劳App到店取餐', '微信/支付宝小程序到店取餐', '自助点餐机']),
+    executionSteps: Object.freeze([
+      '先选择附近麦当劳门店，并确认该门店供应麦咖啡',
+      '在每日10:30-23:59:59进入App或微信/支付宝小程序到店取餐，也可使用自助点餐机',
+      '购买新加坡蟹酱海鲜堡三件套',
+      '确认套餐默认饮品显示+3元可换购美禄可可雪冰',
+      '确认该门店参与且产品有货后再下单，不与其他优惠叠加'
+    ])
+  })
+]);
+
+function dateKey(now) {
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('valid current time is required');
   const parts = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const date = `${values.year}-${values.month}-${values.day}`;
-  return date >= TRUSTED_OFFER.validFrom && date <= TRUSTED_OFFER.validThrough ? TRUSTED_OFFER : null;
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function active(definition, now) {
+  const date = dateKey(now);
+  return date >= definition.validFrom && date <= definition.validThrough;
+}
+
+function sameCore(raw, definition) {
+  if (!raw || typeof raw !== 'object') return false;
+  const rawMarket = raw.market == null ? 'China' : raw.market;
+  const rawDailyWindow = raw.dailyWindow == null ? null : raw.dailyWindow;
+  return raw.id === definition.id &&
+    raw.brandId === definition.brandId &&
+    rawMarket === definition.market &&
+    raw.title === definition.title &&
+    raw.sourceUrl === definition.sourceUrl &&
+    raw.offerPrice && Number(raw.offerPrice.amount) === definition.offerPrice.amount &&
+    raw.offerPrice.currency === definition.offerPrice.currency &&
+    raw.offerPrice.kind === definition.offerPrice.kind &&
+    raw.priceQualifier === definition.priceQualifier &&
+    raw.validFrom === definition.validFrom &&
+    raw.validThrough === definition.validThrough &&
+    rawDailyWindow === definition.dailyWindow &&
+    raw.applicability === definition.applicability &&
+    raw.stacking === definition.stacking;
+}
+
+function copy(definition) {
+  return Object.freeze({
+    id: definition.id,
+    brandId: definition.brandId,
+    market: definition.market,
+    title: definition.title,
+    sourceUrl: definition.sourceUrl,
+    status: 'verified_official',
+    offerPrice: definition.offerPrice,
+    priceQualifier: definition.priceQualifier,
+    validFrom: definition.validFrom,
+    validThrough: definition.validThrough,
+    dailyWindow: definition.dailyWindow,
+    availabilityNote: definition.availabilityNote,
+    applicability: definition.applicability,
+    stacking: definition.stacking,
+    channels: definition.channels,
+    executionSteps: definition.executionSteps
+  });
+}
+
+function authorizeTrustedOffer(raw, { now = new Date() } = {}) {
+  const definition = DEFINITIONS.find((item) => item.id === (raw && raw.id));
+  if (!definition || !active(definition, now) || !sameCore(raw, definition)) return null;
+  return copy(definition);
+}
+
+function listTrustedOffers({ brandId = null, now = new Date() } = {}) {
+  return Object.freeze(DEFINITIONS
+    .filter((item) => (!brandId || item.brandId === brandId) && active(item, now))
+    .map(copy));
+}
+
+const TRUSTED_OFFER_IDS = Object.freeze(DEFINITIONS.map((item) => item.id));
+
+
+
+const INITIAL = listTrustedOffers({ brandId: 'mcd-cn', now: new Date('2026-08-28T00:00:00+08:00') });
+const TRUSTED_OFFER = INITIAL[0];
+
+function getActiveTrustedOffer({ now = new Date() } = {}) {
+  const offers = listTrustedOffers({ brandId: 'mcd-cn', now });
+  return offers.find((offer) => offer.id === TRUSTED_OFFER.id) || null;
+}
+
+
+const GOALS = new Set(['general_meal', 'seafood_combo']);
+
+function chinaClock(now) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('valid current time is required');
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  }).formatToParts(now);
+  const v = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Object.freeze({ date: `${v.year}-${v.month}-${v.day}`, time: `${v.hour}:${v.minute}:${v.second}` });
+}
+
+function inWindow(offer, clock) {
+  if (typeof offer.validFrom !== 'string' || typeof offer.validThrough !== 'string') return false;
+  if (clock.date < offer.validFrom || clock.date > offer.validThrough) return false;
+  if (!offer.dailyWindow) return true;
+  if (typeof offer.dailyWindow !== 'string' || !/^\d{2}:\d{2}:\d{2}-\d{2}:\d{2}:\d{2}$/u.test(offer.dailyWindow)) return false;
+  const [start, end] = offer.dailyWindow.split('-');
+  return clock.time >= start && clock.time <= end;
+}
+
+function safeSteps(offer) {
+  return Array.isArray(offer.executionSteps) ? offer.executionSteps.length : 8;
+}
+
+function scoreOffer(offer, demand) {
+  let score = 0;
+  const reasons = [];
+  const kind = offer.offerPrice && offer.offerPrice.kind;
+
+  if (demand.goal === 'general_meal') {
+    if (kind === 'starting_bundle_price') {
+      score += 100;
+      reasons.push('direct_meal_fit');
+    } else if (kind === 'addon_upgrade_price') {
+      score += 25;
+      reasons.push('secondary_addon_fit');
+    }
+  } else if (demand.goal === 'seafood_combo') {
+    if (kind === 'addon_upgrade_price' && offer.id === 'mcd-cn-seafood-milo-addon-20260824') {
+      score += 125;
+      reasons.push('specific_intent_fit');
+    } else if (kind === 'starting_bundle_price') {
+      score += 50;
+      reasons.push('fallback_meal_fit');
+    }
+  }
+
+  if (offer.applicability === 'partial_restaurants') {
+    score += 12;
+    reasons.push('broader_applicability');
+  } else if (offer.applicability === 'partial_mccafe_restaurants') {
+    score += 4;
+  }
+
+  const steps = safeSteps(offer);
+  score -= Math.min(20, steps * 2);
+  if (steps <= 5) reasons.push('lower_friction');
+  return Object.freeze({ score, reasonCodes: Object.freeze(reasons) });
+}
+
+function rankOffersForDemand({ offers, demand, now = new Date() } = {}) {
+  if (!Array.isArray(offers)) throw new TypeError('offers must be an array');
+  if (!demand || typeof demand !== 'object' || typeof demand.market !== 'string' || typeof demand.brandId !== 'string' || !GOALS.has(demand.goal)) {
+    throw new TypeError('bounded demand is required');
+  }
+  const clock = chinaClock(now);
+  const ranked = [];
+  const seen = new Set();
+
+  for (const offer of offers) {
+    if (!offer || typeof offer !== 'object' || typeof offer.id !== 'string' || seen.has(offer.id)) continue;
+    seen.add(offer.id);
+    if (offer.market !== demand.market || offer.brandId !== demand.brandId || !inWindow(offer, clock)) continue;
+    const scored = scoreOffer(offer, demand);
+    if (scored.score <= 0) continue;
+    ranked.push(Object.freeze({ offer, score: scored.score, reasonCodes: scored.reasonCodes }));
+  }
+
+  ranked.sort((a, b) => b.score - a.score || a.offer.id.localeCompare(b.offer.id));
+  return Object.freeze(ranked.map((item, index) => Object.freeze({ ...item, rank: index + 1 })));
 }
 
 
@@ -87,23 +272,6 @@ function text(value, max = 180) {
   return cleaned.length <= max ? cleaned : '';
 }
 
-function sameTrustedOffer(offer) {
-  if (!offer || typeof offer !== 'object') return false;
-  return offer.id === TRUSTED_OFFER.id &&
-    offer.brandId === TRUSTED_OFFER.brandId &&
-    offer.title === TRUSTED_OFFER.title &&
-    offer.sourceUrl === TRUSTED_OFFER.sourceUrl &&
-    offer.priceQualifier === TRUSTED_OFFER.priceQualifier &&
-    offer.validFrom === TRUSTED_OFFER.validFrom &&
-    offer.validThrough === TRUSTED_OFFER.validThrough &&
-    offer.applicability === TRUSTED_OFFER.applicability &&
-    offer.stacking === TRUSTED_OFFER.stacking &&
-    offer.offerPrice &&
-    offer.offerPrice.amount === TRUSTED_OFFER.offerPrice.amount &&
-    offer.offerPrice.currency === TRUSTED_OFFER.offerPrice.currency &&
-    offer.offerPrice.kind === TRUSTED_OFFER.offerPrice.kind;
-}
-
 function normalizeStore(store) {
   if (!store || typeof store !== 'object') return null;
   const storeId = text(store.id, 120);
@@ -114,8 +282,19 @@ function normalizeStore(store) {
   return Object.freeze({ storeId, name, address, distanceKm, confirmation: 'candidate' });
 }
 
-function createDecision({ offer, store, hasPreciseLocation = false, sessionStoreCheck = null } = {}) {
-  const trustedOffer = sameTrustedOffer(offer) ? TRUSTED_OFFER : null;
+function normalizeMatch(match, trustedOffer) {
+  if (!match || typeof match !== 'object' || !trustedOffer || !match.offer || match.offer.id !== trustedOffer.id) return null;
+  const rank = Number(match.rank);
+  const score = Number(match.score);
+  const reasons = Array.isArray(match.reasonCodes)
+    ? match.reasonCodes.filter((code) => typeof code === 'string' && /^[a-z0-9_]{1,80}$/u.test(code)).slice(0, 8)
+    : [];
+  if (!Number.isInteger(rank) || rank < 1 || !Number.isFinite(score)) return null;
+  return Object.freeze({ rank, score, reasonCodes: Object.freeze(reasons) });
+}
+
+function createDecision({ offer, store, hasPreciseLocation = false, sessionStoreCheck = null, match = null, now = new Date() } = {}) {
+  const trustedOffer = authorizeTrustedOffer(offer, { now });
   const candidateStore = normalizeStore(store);
   const destination = hasPreciseLocation && candidateStore ? candidateStore : null;
   const sessionApplicable = Boolean(
@@ -136,6 +315,7 @@ function createDecision({ offer, store, hasPreciseLocation = false, sessionStore
   if (!trustedOffer) blockers.unshift('verified_offer');
 
   const readyToExecute = Boolean(trustedOffer && destination && sessionApplicable);
+  const normalizedMatch = normalizeMatch(match, trustedOffer);
   return Object.freeze({
     kind: 'mmvp_savings_plan',
     destination,
@@ -149,20 +329,13 @@ function createDecision({ offer, store, hasPreciseLocation = false, sessionStore
       globalConfirmed: false,
       checkedAt: sessionApplicable ? sessionStoreCheck.checkedAt : null
     }),
+    match: normalizedMatch,
     executionSteps: Object.freeze(trustedOffer ? [...trustedOffer.executionSteps] : []),
     readiness: readyToExecute ? 'ready_to_execute' : 'verification_required',
     blockers: Object.freeze(blockers),
     primaryAction: Object.freeze(readyToExecute
-      ? {
-          kind: 'continue_official_order',
-          label: '继续在官方渠道下单',
-          url: trustedOffer.sourceUrl
-        }
-      : {
-          kind: 'verify_official_offer',
-          label: '打开官方活动确认',
-          url: trustedOffer ? trustedOffer.sourceUrl : TRUSTED_OFFER.sourceUrl
-        })
+      ? { kind: 'continue_official_order', label: '继续在官方渠道下单', url: trustedOffer.sourceUrl }
+      : { kind: 'verify_official_offer', label: '打开官方活动确认', url: trustedOffer ? trustedOffer.sourceUrl : 'https://www.mcdonalds.com.cn/news/sales' })
   });
 }
 
@@ -234,33 +407,70 @@ function blocked(reason, detail = {}) {
   return Object.freeze({ kind: 'blocked', reason, ...detail });
 }
 
-function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, findStores, now = () => new Date() } = {}) {
-  if (typeof readLocation !== 'function' || typeof isSupportedLocation !== 'function' || typeof loadOffer !== 'function' || typeof findStores !== 'function' || typeof now !== 'function') {
+function defaultRank(offers) {
+  return Object.freeze(offers.map((offer, index) => Object.freeze({ offer, rank: index + 1, score: 0, reasonCodes: Object.freeze([]) })));
+}
+
+function createExecutionSession({
+  readLocation,
+  isSupportedLocation,
+  loadOffer = null,
+  loadOffers = null,
+  rankOffers = null,
+  demand = Object.freeze({ market: 'China', brandId: 'mcd-cn', goal: 'general_meal' }),
+  findStores,
+  now = () => new Date()
+} = {}) {
+  const offerLoader = typeof loadOffers === 'function'
+    ? loadOffers
+    : typeof loadOffer === 'function'
+      ? async () => Object.freeze([await loadOffer()])
+      : null;
+  if (typeof readLocation !== 'function' || typeof isSupportedLocation !== 'function' || !offerLoader || typeof findStores !== 'function' || typeof now !== 'function') {
     throw new TypeError('mMVP execution session dependencies are required');
   }
+  if (rankOffers !== null && typeof rankOffers !== 'function') throw new TypeError('rankOffers must be a function');
 
-  let offer = null;
+  let rankedOffers = [];
   let stores = [];
+  let offerIndex = 0;
   let storeIndex = 0;
+  let rejectedCount = 0;
   let storeCheck = null;
   let currentPlan = null;
+  let activeDemand = demand;
+
+  function currentRankedOffer() {
+    return rankedOffers[offerIndex] || null;
+  }
 
   function buildCurrentPlan() {
+    const ranked = currentRankedOffer();
     const store = stores[storeIndex] || null;
-    if (!offer || !store) {
+    if (!ranked || !store) {
       currentPlan = null;
-      return blocked('no_participating_candidates', { checkedCount: storeIndex });
+      return blocked('no_participating_candidates', { checkedCount: rejectedCount });
     }
-    currentPlan = createDecision({ offer, store, hasPreciseLocation: true, sessionStoreCheck: storeCheck });
+    currentPlan = createDecision({
+      offer: ranked.offer,
+      store,
+      hasPreciseLocation: true,
+      sessionStoreCheck: storeCheck,
+      match: ranked,
+      now: now()
+    });
     return freezePlanResult(currentPlan);
   }
 
-  async function start() {
-    offer = null;
+  async function start({ demand: startDemand = activeDemand } = {}) {
+    rankedOffers = [];
     stores = [];
+    offerIndex = 0;
     storeIndex = 0;
+    rejectedCount = 0;
     storeCheck = null;
     currentPlan = null;
+    activeDemand = startDemand;
 
     const location = await readLocation();
     if (!location || !location.hasPreciseLocation) {
@@ -268,10 +478,17 @@ function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, 
     }
     if (!isSupportedLocation(location)) return blocked('unsupported_market');
 
-    const [loadedOffer, foundStores] = await Promise.all([loadOffer(), findStores(location)]);
+    const [loaded, foundStores] = await Promise.all([offerLoader(), findStores(location)]);
+    const offers = Array.isArray(loaded) ? loaded.filter(Boolean).slice(0, 8) : [];
+    if (!offers.length) return blocked('no_offers');
     if (!Array.isArray(foundStores) || foundStores.length === 0) return blocked('no_stores');
-    offer = loadedOffer;
-    stores = [...foundStores];
+    stores = foundStores.slice(0, 3);
+
+    const ranked = rankOffers
+      ? rankOffers({ offers, demand: activeDemand, now: now() })
+      : defaultRank(offers);
+    rankedOffers = Array.isArray(ranked) ? ranked.slice(0, 8) : [];
+    if (!rankedOffers.length) return blocked('no_matching_offers');
     return buildCurrentPlan();
   }
 
@@ -294,8 +511,13 @@ function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, 
       storeId: currentPlan.destination.storeId,
       checkedAt: now().toISOString()
     });
-    storeIndex += 1;
+    rejectedCount += 1;
     storeCheck = null;
+    storeIndex += 1;
+    if (storeIndex >= stores.length) {
+      offerIndex += 1;
+      storeIndex = 0;
+    }
     return buildCurrentPlan();
   }
 
@@ -304,108 +526,6 @@ function createExecutionSession({ readLocation, isSupportedLocation, loadOffer, 
   }
 
   return Object.freeze({ start, confirmCurrentStoreShown, rejectCurrentStoreAndAdvance, getCurrentPlan });
-}
-
-
-const RightsClass = Object.freeze({
-  UNKNOWN: 'Unknown',
-  PUBLIC_OFFER: 'PublicOffer',
-  PERSONAL_BENEFIT: 'PersonalBenefit',
-  TRANSFERABLE_OFFER: 'TransferableOffer'
-});
-
-const registeredSources = new WeakSet();
-
-function defineSource(definition) {
-  const source = Object.freeze({ ...definition, grantsOfferTruth: false });
-  registeredSources.add(source);
-  return source;
-}
-
-const MCD_CN_OFFICIAL_SOURCE = defineSource({
-  id: 'mcd-cn-official-web',
-  owner: "McDonald's China",
-  brandId: 'mcd-cn',
-  market: 'China',
-  sourceType: 'official_web',
-  canonicalHost: 'www.mcdonalds.com.cn'
-});
-
-function cleanText(value, max = 500) {
-  if (typeof value !== 'string') return null;
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return cleaned && cleaned.length <= max ? cleaned : null;
-}
-
-function cloneOfferPrice(value) {
-  if (!value || typeof value !== 'object') return null;
-  return Object.freeze({
-    amount: typeof value.amount === 'number' ? value.amount : null,
-    currency: cleanText(value.currency, 16),
-    kind: cleanText(value.kind, 80)
-  });
-}
-
-function cloneSteps(value) {
-  if (!Array.isArray(value)) return Object.freeze([]);
-  const steps = value.map((item) => cleanText(item, 300));
-  if (steps.some((item) => !item)) return Object.freeze([]);
-  return Object.freeze(steps);
-}
-
-function createOfferObservation({ source, observedAt, row } = {}) {
-  if (!source || typeof source !== 'object' || !registeredSources.has(source)) throw new TypeError('registered source is required');
-  if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) throw new TypeError('valid observation time is required');
-  if (!row || typeof row !== 'object') throw new TypeError('offer observation row is required');
-
-  const candidate = Object.freeze({
-    id: cleanText(row.id, 160),
-    title: cleanText(row.title, 300),
-    sourceUrl: cleanText(row.sourceUrl, 800),
-    offerPrice: cloneOfferPrice(row.offerPrice),
-    priceQualifier: cleanText(row.priceQualifier, 500),
-    validFrom: cleanText(row.validFrom, 32),
-    validThrough: cleanText(row.validThrough, 32),
-    applicability: cleanText(row.applicability, 120),
-    stacking: cleanText(row.stacking, 120),
-    executionSteps: cloneSteps(row.executionSteps)
-  });
-
-  return Object.freeze({
-    kind: 'OfferObservation',
-    trust: 'untrusted',
-    sourceId: source.id,
-    sourceType: source.sourceType,
-    observedAt: observedAt.toISOString(),
-    brandCandidate: source.brandId,
-    marketCandidate: source.market,
-    rightsClass: RightsClass.UNKNOWN,
-    candidate
-  });
-}
-
-function nonNegative(value, name) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError(`${name} must be finite and non-negative`);
-  return number;
-}
-
-function scoreAcquisitionPriority({ demand, potentialValue, coverageGap, freshnessUrgency, trustPotential, acquisitionCost } = {}) {
-  const cost = Number(acquisitionCost);
-  if (!Number.isFinite(cost) || cost <= 0) throw new TypeError('acquisitionCost must be finite and positive');
-  const score = (
-    nonNegative(demand, 'demand') *
-    nonNegative(potentialValue, 'potentialValue') *
-    nonNegative(coverageGap, 'coverageGap') *
-    nonNegative(freshnessUrgency, 'freshnessUrgency') *
-    nonNegative(trustPotential, 'trustPotential')
-  ) / cost;
-
-  return Object.freeze({
-    kind: 'internal_acquisition_priority',
-    score,
-    userFacingSavings: null
-  });
 }
 
 
@@ -508,47 +628,77 @@ function createMcDonaldsStoreProvider({ fetchImpl = globalThis.fetch, timeoutMs 
 
 
 
+const DEFAULT_URL = '../mvp/data/verified-offer-registry-v1.json';
+const FRESH_MS = 24 * 60 * 60 * 1000;
+const FUTURE_SKEW_MS = 5 * 60 * 1000;
 
-const DEFAULT_URL = '../mvp/data/verified-mcd-cn.json';
-
-function exactCore(observation) {
-  if (!observation || observation.kind !== 'OfferObservation' || observation.trust !== 'untrusted' || observation.sourceId !== MCD_CN_OFFICIAL_SOURCE.id) return false;
-  const row = observation.candidate;
-  return Boolean(row &&
-    row.id === TRUSTED_OFFER.id &&
-    row.title === TRUSTED_OFFER.title &&
-    row.sourceUrl === TRUSTED_OFFER.sourceUrl &&
-    row.priceQualifier === TRUSTED_OFFER.priceQualifier &&
-    row.validFrom === TRUSTED_OFFER.validFrom &&
-    row.validThrough === TRUSTED_OFFER.validThrough &&
-    row.applicability === TRUSTED_OFFER.applicability &&
-    row.stacking === TRUSTED_OFFER.stacking &&
-    row.offerPrice && row.offerPrice.amount === TRUSTED_OFFER.offerPrice.amount &&
-    row.offerPrice.currency === TRUSTED_OFFER.offerPrice.currency &&
-    row.offerPrice.kind === TRUSTED_OFFER.offerPrice.kind &&
-    Array.isArray(row.executionSteps) &&
-    row.executionSteps.length === TRUSTED_OFFER.executionSteps.length &&
-    row.executionSteps.every((step, index) => step === TRUSTED_OFFER.executionSteps[index]));
+function activeOrder(now) {
+  return listTrustedOffers({ brandId: 'mcd-cn', now }).map((offer) => offer.id);
 }
 
-async function loadVerifiedMcDonaldsOffer({ fetchFn = globalThis.fetch, now = () => new Date(), url = DEFAULT_URL } = {}) {
+function parseCapture(payload, now) {
+  const captured = Date.parse(payload && payload.capturedAt);
+  if (!Number.isFinite(captured)) throw new Error('核验数据缺少可信的新鲜度时间');
+  const nowMs = now.getTime();
+  if (captured > nowMs + FUTURE_SKEW_MS) throw new Error('核验数据时间无效');
+  if (nowMs - captured > FRESH_MS) throw new Error('核验数据已过期，不够新鲜');
+  return captured;
+}
+
+function canonicalize(rows, now) {
+  const byId = new Map();
+  for (const row of rows) {
+    const withContext = row && typeof row === 'object' ? { ...row, market: row.market || 'China' } : row;
+    const authorized = authorizeTrustedOffer(withContext, { now });
+    if (authorized && !byId.has(authorized.id)) byId.set(authorized.id, authorized);
+  }
+  const ordered = activeOrder(now).map((id) => byId.get(id)).filter(Boolean);
+  return Object.freeze(ordered);
+}
+
+async function loadVerifiedMcDonaldsOffers({ fetchFn = globalThis.fetch, now = () => new Date(), url = DEFAULT_URL } = {}) {
   if (typeof fetchFn !== 'function') throw new TypeError('fetch is required');
   if (typeof now !== 'function') throw new TypeError('clock is required');
+  const current = now();
+  if (!(current instanceof Date) || !Number.isFinite(current.getTime())) throw new TypeError('valid current time is required');
   const response = await fetchFn(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
   if (!response || !response.ok) throw new Error(`核验数据读取失败${response && response.status ? `（HTTP ${response.status}）` : ''}`);
   const payload = await response.json();
+  if (!payload || payload.schemaVersion !== 1 || payload.kind !== 'stackback_verified_offer_registry' || payload.market !== 'China' || !Array.isArray(payload.rows) || payload.rows.length > 20) {
+    throw new Error('核验数据上下文不可信');
+  }
+  parseCapture(payload, current);
+  const authorized = canonicalize(payload.rows, current);
+  if (authorized.length === 0) throw new Error('核验数据与代码授权的可信事实不一致');
+  return authorized;
+}
+
+// Compatibility for the first mMVP golden-path tests. Production runtime uses the
+// fresh multi-offer registry above; provider-authored authority is ignored here too.
+async function loadVerifiedMcDonaldsOffer({ fetchFn = globalThis.fetch, now = () => new Date(), url = DEFAULT_URL } = {}) {
+  if (typeof fetchFn !== 'function') throw new TypeError('fetch is required');
+  if (typeof now !== 'function') throw new TypeError('clock is required');
+  const current = now();
+  const response = await fetchFn(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+  if (!response || !response.ok) throw new Error(`核验数据读取失败${response && response.status ? `（HTTP ${response.status}）` : ''}`);
+  const payload = await response.json();
+  if (payload && payload.kind === 'stackback_verified_offer_registry') {
+    if (payload.schemaVersion !== 1 || payload.market !== 'China' || !Array.isArray(payload.rows) || payload.rows.length > 20) throw new Error('核验数据上下文不可信');
+    parseCapture(payload, current);
+    const offers = canonicalize(payload.rows, current);
+    if (!offers.length) throw new Error('核验数据与代码授权的可信事实不一致');
+    return offers[0];
+  }
   if (!payload || payload.schemaVersion !== 1 || payload.brandId !== 'mcd-cn' || payload.market !== 'China' || !Array.isArray(payload.rows)) {
     throw new Error('核验数据上下文不可信');
   }
-  const matches = payload.rows.filter((row) => row && row.id === TRUSTED_OFFER.id);
+  const expected = listTrustedOffers({ brandId: 'mcd-cn', now: current }).find((offer) => offer.id === 'mcd-cn-mix-match-20260824');
+  if (!expected) throw new Error('核验活动不在有效期内');
+  const matches = payload.rows.filter((row) => row && row.id === expected.id);
   if (matches.length !== 1) throw new Error('核验数据与代码授权的可信事实不一致');
-
-  const observedAt = now();
-  const observation = createOfferObservation({ source: MCD_CN_OFFICIAL_SOURCE, observedAt, row: matches[0] });
-  if (!exactCore(observation)) throw new Error('核验数据与代码授权的可信事实不一致');
-  const active = getActiveTrustedOffer({ now: observedAt });
-  if (!active) throw new Error('核验活动不在有效期内');
-  return active;
+  const authorized = authorizeTrustedOffer({ ...matches[0], brandId: 'mcd-cn', market: 'China' }, { now: current });
+  if (!authorized) throw new Error('核验数据与代码授权的可信事实不一致');
+  return authorized;
 }
 
 
@@ -590,6 +740,13 @@ function money(amount, currency) {
   return `${value} ${currency || ''}`.trim();
 }
 
+function matchNote(plan) {
+  const reasons = plan && plan.match && Array.isArray(plan.match.reasonCodes) ? plan.match.reasonCodes : [];
+  if (reasons.includes('specific_intent_fit')) return '更贴合你想吃海鲜堡套餐的需求。';
+  if (reasons.includes('direct_meal_fit')) return '在当前已核验权益中，这项更适合“随便吃点”的需求。';
+  return null;
+}
+
 function createPlanViewModel(plan) {
   if (!plan || plan.kind !== 'mmvp_savings_plan') throw new TypeError('mMVP savings plan is required');
   const price = plan.offerPrice || {};
@@ -622,6 +779,7 @@ function createPlanViewModel(plan) {
 
   return Object.freeze({
     title,
+    matchNote: matchNote(plan),
     reliableSavingsLabel: plan.reliableSavings && plan.reliableSavings.known ? money(plan.reliableSavings.amount, plan.reliableSavings.currency) : '暂不能可靠计算',
     primaryAction,
     secondaryActions: Object.freeze([]),
@@ -629,7 +787,7 @@ function createPlanViewModel(plan) {
       visible: Boolean(destination && needsStoreApplicability),
       question: destination ? `在官方点购页选择 ${destination.name} 后，这个活动显示了吗？` : null,
       shownLabel: '本店显示活动',
-      notShownLabel: '没有显示，换下一家'
+      notShownLabel: '没有显示，换下一个方案'
     }),
     trustNote: sessionConfirmed
       ? '活动价由 StackBack 核验；本店参与仅是你在本次官方点购页的即时确认，不会升级为全局门店事实。'
@@ -651,16 +809,17 @@ function section(row) {
 function renderIdle(root) {
   root.innerHTML = `
     <section class="hero">
-      <div class="eyebrow">上海 · 麦当劳 · mMVP</div>
-      <h1>现在去哪里，怎么买？</h1>
-      <p>只做一件事：用你当前的位置，给出一个能继续核验和执行的麦当劳省钱方案。</p>
-      <button class="primary" data-action="locate">使用当前位置</button>
-      <div class="micro">定位只用于本次附近门店判断；首版仅覆盖上海。</div>
+      <div class="eyebrow">上海 · 麦当劳 · mMVP 0.9</div>
+      <h1>现在麦当劳怎么点更值？</h1>
+      <p>选一个大致需求。StackBack 只给一个当前最值得先核验的方案。</p>
+      <label class="intent-field"><span>我现在想</span><select data-role="demand-goal"><option value="general_meal">随便吃点</option><option value="seafood_combo">吃海鲜堡套餐</option></select></label>
+      <button class="primary" data-action="locate">用当前位置找方案</button>
+      <div class="micro">只用本次位置判断附近门店；首版只验证上海麦当劳。</div>
     </section>`;
 }
 
-function renderLoading(root, message = '正在找附近麦当劳…') {
-  root.innerHTML = `<section class="hero compact"><div class="spinner" aria-hidden="true"></div><h1>${esc(message)}</h1><p>不会因为“附近”就把门店说成活动适用门店。</p></section>`;
+function renderLoading(root, message = '正在匹配当前最值得先核验的方案…') {
+  root.innerHTML = `<section class="hero compact"><div class="spinner" aria-hidden="true"></div><h1>${esc(message)}</h1><p>先筛已核验权益，再结合你的需求和附近门店。不会把内部排序分数当成省钱金额。</p></section>`;
 }
 
 function renderError(root, title, detail) {
@@ -682,16 +841,17 @@ function renderPlan(root, plan, vm) {
     <section class="answer">
       <div class="eyebrow">当前建议</div>
       <h1>${esc(vm.title)}</h1>
+      ${vm.matchNote ? `<div class="match-note">${esc(vm.matchNote)}</div>` : ''}
       <div class="answer-grid">${vm.sections.map(section).join('')}</div>
       <div class="savings-line"><span>可靠可省</span><strong>${esc(vm.reliableSavingsLabel)}</strong></div>
       <a class="primary link" href="${esc(vm.primaryAction.url)}" target="_blank" rel="noopener noreferrer">${esc(vm.primaryAction.label)}</a>
       ${storeCheck}
-      <div class="trust-note">${esc(vm.trustNote)} 13.9 元活动价不等于“可靠省了多少”。</div>
+      <div class="trust-note">${esc(vm.trustNote)} 活动价不等于“可靠省了多少”。</div>
     </section>
     ${canFeedback ? `
     <section class="feedback-card">
       <h2>用完告诉 StackBack 结果</h2>
-      <p>只记录这次活动 × 这家店，不会自动升级成全上海事实。</p>
+      <p>只记录这次活动 × 这家店，帮助后续判断现实执行质量，不自动升级成全局事实。</p>
       <form data-role="feedback-form">
         <label>结果<select name="outcome"><option value="success">成功使用</option><option value="failure">未成功</option></select></label>
         <label>实际支付<input name="actualPaid" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" placeholder="成功时填写，例如 13.9"></label>
@@ -707,9 +867,10 @@ function renderPlan(root, plan, vm) {
 function renderFeedbackResult(root, record) {
   if (!root || !record) return;
   root.innerHTML = record.outcome === 'success'
-    ? `<div class="receipt success">已记录：本次成功使用，实付 ¥${esc(record.actualPaid)}。这不是全局可靠省额。</div>`
+    ? `<div class="receipt success">已记录：本次成功使用，实付 ¥${esc(record.actualPaid)}。没有可靠基准价时，这仍不是“已证实省了多少”。</div>`
     : '<div class="receipt">已记录：本次未成功。只作为这台设备上的精确执行记录。</div>';
 }
+
 
 
 
@@ -724,9 +885,15 @@ const feedbackStore = createFeedbackStore();
 const session = createExecutionSession({
   readLocation: getCurrentLocation,
   isSupportedLocation: isShanghai,
-  loadOffer: loadVerifiedMcDonaldsOffer,
+  loadOffers: loadVerifiedMcDonaldsOffers,
+  rankOffers: rankOffersForDemand,
   findStores: createMcDonaldsStoreProvider()
 });
+let lastGoal = 'general_meal';
+
+function boundedGoal(value) {
+  return value === 'seafood_combo' ? 'seafood_combo' : 'general_meal';
+}
 
 function present(result) {
   if (result && result.kind === 'plan') {
@@ -744,17 +911,20 @@ function present(result) {
     renderError(root, '首版先只做上海', 'mMVP 目前只验证上海麦当劳这一条完整闭环，不用泛化结果冒充本地答案。');
   } else if (result.reason === 'no_stores') {
     renderError(root, '附近没有找到麦当劳候选门店', '这次没有足够可靠的附近门店数据，StackBack 不会凭空推荐。');
+  } else if (result.reason === 'no_offers' || result.reason === 'no_matching_offers') {
+    renderError(root, '现在没有适合这个需求的已核验权益', 'StackBack 不会用候选活动或过期权益填空。');
   } else if (result.reason === 'no_participating_candidates') {
-    renderError(root, '附近候选店都没有确认到这个活动', '刚才检查的候选门店都没有在官方点购页显示活动。StackBack 不会继续推荐它们。');
+    renderError(root, '附近候选方案都没有确认到这个活动', '已经按当前匹配顺序检查过有限的活动 × 门店组合。StackBack 不会无限尝试或假装可用。');
   } else {
     renderError(root, '这次没有得到可靠答案', '请稍后重新定位。');
   }
 }
 
-async function locateAndPlan() {
+async function locateAndPlan(goal = lastGoal) {
+  lastGoal = boundedGoal(goal);
   renderLoading(root);
   try {
-    present(await session.start());
+    present(await session.start({ demand: { market: 'China', brandId: 'mcd-cn', goal: lastGoal } }));
   } catch (error) {
     renderError(root, '这次没有得到可靠答案', error && error.message ? error.message : '请稍后重新定位。');
   }
@@ -764,7 +934,8 @@ root.addEventListener('click', (event) => {
   const locate = event.target.closest('[data-action="locate"]');
   if (locate) {
     event.preventDefault();
-    locateAndPlan();
+    const selector = root.querySelector('[data-role="demand-goal"]');
+    locateAndPlan(selector ? selector.value : lastGoal);
     return;
   }
   const shown = event.target.closest('[data-action="store-shown"]');
