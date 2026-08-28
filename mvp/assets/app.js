@@ -20,6 +20,12 @@
       .slice(0, max);
   }
 
+  function sameKeys(object, allowed) {
+    if (!object || typeof object !== 'object' || Array.isArray(object)) return false;
+    const keys = Object.keys(object);
+    return keys.length === allowed.length && keys.every((key) => allowed.includes(key));
+  }
+
   function normalizeIntent(input) {
     const raw = cleanText(input, 80);
     const match = BRAND_RULES.find((rule) => rule.pattern.test(raw));
@@ -94,6 +100,28 @@
     });
   }
 
+  function normalizeLocalGuidance(value, { brandId, offerId, storeIds } = {}) {
+    if (!sameKeys(value, ['evidenceClass', 'brandId', 'offerId', 'demotedStoreIds', 'offerCaution'])) return null;
+    if (value.evidenceClass !== 'user_reported_local_guidance') return null;
+    if (value.brandId !== brandId || value.offerId !== offerId) return null;
+    if (!Array.isArray(value.demotedStoreIds) || value.demotedStoreIds.length > 30) return null;
+    if (value.offerCaution !== null && value.offerCaution !== 'offer_ended') return null;
+    const allowedStores = new Set(storeIds);
+    const seen = new Set();
+    const demotedStoreIds = [];
+    for (const raw of value.demotedStoreIds) {
+      const id = cleanText(raw, 100);
+      if (!id || !allowedStores.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      demotedStoreIds.push(id);
+    }
+    return Object.freeze({
+      evidenceClass: 'user_reported_local_guidance',
+      demotedStoreIds: Object.freeze(demotedStoreIds),
+      offerCaution: value.offerCaution
+    });
+  }
+
   function buildSavingsPlan({
     intent,
     stores = [],
@@ -103,16 +131,29 @@
     verifiedOfferFreshness = 'unknown',
     storeError = null,
     offerError = null,
-    verifiedOfferError = null
+    verifiedOfferError = null,
+    localGuidance = null
   } = {}) {
     const normalizedIntent = intent && typeof intent === 'object' ? intent : normalizeIntent('');
-    const normalizedStores = stores.map(normalizeStore).filter(Boolean).sort((a, b) => a.distanceMeters - b.distanceMeters);
+    const normalizedStores = stores.map(normalizeStore).filter(Boolean);
     const normalizedOffers = offers.map(normalizeOffer).filter(Boolean);
     const normalizedVerified = verifiedOfferFreshness === 'fresh' ? verifiedOffers.map(normalizeVerifiedOffer).filter(Boolean) : [];
-    const store = normalizedStores[0] || null;
     const verifiedOffer = normalizedVerified[0] || null;
     const offer = verifiedOffer || normalizedOffers[0] || null;
     const selectedFreshness = verifiedOffer ? verifiedOfferFreshness : offerFreshness;
+    const localFeedback = offer
+      ? normalizeLocalGuidance(localGuidance, {
+          brandId: normalizedIntent.brandId,
+          offerId: offer.id,
+          storeIds: normalizedStores.map((row) => row.id)
+        })
+      : null;
+    const demoted = new Set(localFeedback ? localFeedback.demotedStoreIds : []);
+    normalizedStores.sort((a, b) => {
+      const localRank = Number(demoted.has(a.id)) - Number(demoted.has(b.id));
+      return localRank || a.distanceMeters - b.distanceMeters;
+    });
+    const store = normalizedStores[0] || null;
     const blockers = ['savings_amount_unknown'];
     if (store) blockers.push('store_applicability_unverified');
     else blockers.push('store_not_found_or_unverified');
@@ -137,6 +178,7 @@
       reliableSavings: Object.freeze({ status: 'unknown', amount: null, currency: null }),
       executionSteps: Object.freeze(verifiedOffer ? [...verifiedOffer.executionSteps] : []),
       stacking: verifiedOffer ? verifiedOffer.stacking : 'unknown',
+      localFeedback,
       blockers: Object.freeze([...new Set(blockers)]),
       diagnostics: Object.freeze({
         storeError: storeError ? cleanText(storeError, 120) : null,
@@ -152,7 +194,6 @@
 
   return Object.freeze({ normalizeIntent, buildSavingsPlan, canEnterCouponPool, cleanText });
 });
-
 ;
 (function (root, factory) {
   const api = factory();
@@ -165,7 +206,20 @@
   const EVIDENCE_CLASS = 'user_reported_local';
   const CURRENCY = 'CNY';
   const MAX_MONEY = 100000;
-  const TOP_KEYS = Object.freeze([
+  const FAILURE_CODES = Object.freeze([
+    'store_not_participating',
+    'offer_not_shown',
+    'price_mismatch',
+    'offer_ended',
+    'other'
+  ]);
+  const FAILURE_CODE_SET = new Set(FAILURE_CODES);
+  const TOP_KEYS_V2 = Object.freeze([
+    'schemaVersion', 'id', 'evidenceClass', 'observedAt', 'brandId', 'brandName',
+    'store', 'offer', 'outcome', 'actualPaid', 'comparisonPrice',
+    'selfReportedDifference', 'successfulSavingsSession', 'failureCode', 'failureNote'
+  ]);
+  const TOP_KEYS_V1 = Object.freeze([
     'schemaVersion', 'id', 'evidenceClass', 'observedAt', 'brandId', 'brandName',
     'store', 'offer', 'outcome', 'actualPaid', 'comparisonPrice',
     'selfReportedDifference', 'successfulSavingsSession', 'failureReason'
@@ -191,6 +245,13 @@
     const number = Number(value);
     if (!Number.isFinite(number) || number < 0 || number > MAX_MONEY) throw new TypeError('金额无效');
     return Object.freeze({ amount: roundMoney(number), currency: CURRENCY });
+  }
+
+  function normalizeFailureCode(value, { required = false } = {}) {
+    const code = String(value == null ? '' : value).trim();
+    if (!code && !required) return '';
+    if (!FAILURE_CODE_SET.has(code)) throw new TypeError('失败原因必须从预设选项中选择');
+    return code;
   }
 
   function normalizeContext(context) {
@@ -240,11 +301,15 @@
       ? Object.freeze({ amount: roundMoney(comparisonPrice.amount - actualPaid.amount), currency: CURRENCY })
       : null;
     const successfulSavingsSession = Boolean(outcome === 'success' && selfReportedDifference && selfReportedDifference.amount > 0);
-    const failureReason = outcome === 'failure' ? cleanText(input.failureReason, 180) : '';
-    const idSeed = [observedIso, safeContext.brandId, safeContext.store.id, safeContext.offer.id, outcome, actualPaid && actualPaid.amount, comparisonPrice && comparisonPrice.amount, failureReason].join('|');
+    const failureCode = outcome === 'failure' ? normalizeFailureCode(input.failureCode, { required: true }) : '';
+    const failureNote = outcome === 'failure' ? cleanText(input.failureNote, 180) : '';
+    const idSeed = [
+      observedIso, safeContext.brandId, safeContext.store.id, safeContext.offer.id, outcome,
+      actualPaid && actualPaid.amount, comparisonPrice && comparisonPrice.amount, failureCode, failureNote
+    ].join('|');
 
     return Object.freeze({
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: `execution-${parsedObservedAt.getTime()}-${stableHash(idSeed)}`,
       evidenceClass: EVIDENCE_CLASS,
       observedAt: observedIso,
@@ -257,7 +322,8 @@
       comparisonPrice,
       selfReportedDifference,
       successfulSavingsSession,
-      failureReason
+      failureCode,
+      failureNote
     });
   }
 
@@ -275,7 +341,11 @@
 
   function normalizeStoredReport(row) {
     try {
-      if (!sameKeys(row, TOP_KEYS) || row.schemaVersion !== 1 || row.evidenceClass !== EVIDENCE_CLASS) return null;
+      if (!row || typeof row !== 'object' || Array.isArray(row) || row.evidenceClass !== EVIDENCE_CLASS) return null;
+      const isV2 = row.schemaVersion === 2 && sameKeys(row, TOP_KEYS_V2);
+      const isLegacyV1 = row.schemaVersion === 1 && sameKeys(row, TOP_KEYS_V1);
+      if (!isV2 && !isLegacyV1) return null;
+
       const id = cleanText(row.id, 180);
       if (!/^execution-[A-Za-z0-9._:-]+$/.test(id)) return null;
       const observedAt = new Date(row.observedAt);
@@ -294,7 +364,8 @@
       const storedDifference = normalizeStoredMoney(row.selfReportedDifference);
       let selfReportedDifference = null;
       let successfulSavingsSession = false;
-      let failureReason = '';
+      let failureCode = '';
+      let failureNote = '';
 
       if (row.outcome === 'success') {
         if (!actualPaid) return null;
@@ -307,15 +378,22 @@
         } else if (row.selfReportedDifference != null) {
           return null;
         }
-        if (row.failureReason !== '') return null;
+        if (isV2 && (row.failureCode !== '' || row.failureNote !== '')) return null;
+        if (isLegacyV1 && row.failureReason !== '') return null;
       } else {
         if (row.actualPaid != null || row.comparisonPrice != null || row.selfReportedDifference != null || row.successfulSavingsSession !== false) return null;
-        failureReason = cleanText(row.failureReason, 180);
+        if (isV2) {
+          failureCode = normalizeFailureCode(row.failureCode, { required: true });
+          failureNote = cleanText(row.failureNote, 180);
+        } else {
+          failureCode = 'other';
+          failureNote = cleanText(row.failureReason, 180);
+        }
       }
       if (Boolean(row.successfulSavingsSession) !== successfulSavingsSession) return null;
 
       return Object.freeze({
-        schemaVersion: 1,
+        schemaVersion: 2,
         id,
         evidenceClass: EVIDENCE_CLASS,
         observedAt: observedAt.toISOString(),
@@ -328,16 +406,16 @@
         comparisonPrice,
         selfReportedDifference,
         successfulSavingsSession,
-        failureReason
+        failureCode,
+        failureNote
       });
     } catch {
       return null;
     }
   }
 
-  return Object.freeze({ createExecutionReport, normalizeStoredReport, cleanText });
+  return Object.freeze({ createExecutionReport, normalizeStoredReport, cleanText, FAILURE_CODES });
 });
-
 ;
 (function (root, factory) {
   const execution = typeof module === 'object' && module.exports
@@ -394,6 +472,101 @@
   return Object.freeze({ summarizeExecutionReports, SUMMARY_EVIDENCE_CLASS });
 });
 
+;
+(function (root, factory) {
+  const execution = typeof module === 'object' && module.exports
+    ? require('./execution-report.js')
+    : root.StackBackMvp && root.StackBackMvp.ExecutionReport;
+  const api = factory(execution);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.ExecutionGuidance = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (ExecutionReport) {
+  'use strict';
+
+  const EVIDENCE_CLASS = 'user_reported_local_guidance';
+  const DEFAULT_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+  const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+  const DEMOTION_CODES = new Set(['store_not_participating', 'offer_not_shown', 'price_mismatch']);
+
+  function cleanId(value, max = 120) {
+    if (!ExecutionReport || typeof ExecutionReport.cleanText !== 'function') return '';
+    return ExecutionReport.cleanText(value, max);
+  }
+
+  function instantMs(value) {
+    const ms = Date.parse(String(value == null ? '' : value));
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function createExecutionGuidance({
+    reports = [],
+    brandId,
+    offerId,
+    candidateStoreIds = [],
+    now = new Date().toISOString(),
+    maxAgeMs = DEFAULT_MAX_AGE_MS
+  } = {}) {
+    if (!ExecutionReport || typeof ExecutionReport.normalizeStoredReport !== 'function') throw new Error('ExecutionReport domain is required');
+    if (!Array.isArray(reports)) throw new TypeError('执行历史必须是数组');
+    if (!Array.isArray(candidateStoreIds)) throw new TypeError('候选门店必须是数组');
+    const safeBrandId = cleanId(brandId, 80);
+    const safeOfferId = cleanId(offerId, 120);
+    if (!safeBrandId || !safeOfferId) throw new TypeError('本机反馈上下文不完整');
+    const nowMs = instantMs(now);
+    if (nowMs == null) throw new TypeError('当前时间无效');
+    const maxAge = Number(maxAgeMs);
+    if (!Number.isInteger(maxAge) || maxAge <= 0 || maxAge > 14 * 24 * 60 * 60 * 1000) throw new TypeError('反馈有效期无效');
+
+    const candidateIds = [];
+    const candidateSet = new Set();
+    for (const value of candidateStoreIds.slice(0, 30)) {
+      const id = cleanId(value, 120);
+      if (id && !candidateSet.has(id)) {
+        candidateSet.add(id);
+        candidateIds.push(id);
+      }
+    }
+
+    const safe = reports
+      .slice(0, 100)
+      .map((row) => ExecutionReport.normalizeStoredReport(row))
+      .filter(Boolean)
+      .filter((report) => {
+        if (report.brandId !== safeBrandId || report.offer.id !== safeOfferId || !candidateSet.has(report.store.id)) return false;
+        const observedMs = instantMs(report.observedAt);
+        if (observedMs == null || observedMs - nowMs > MAX_FUTURE_SKEW_MS) return false;
+        return nowMs - observedMs <= maxAge;
+      })
+      .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
+
+    const latestByStore = new Map();
+    for (const report of safe) {
+      if (!latestByStore.has(report.store.id)) latestByStore.set(report.store.id, report);
+    }
+
+    const demotedStoreIds = [];
+    for (const id of candidateIds) {
+      const latest = latestByStore.get(id);
+      if (latest && latest.outcome === 'failure' && DEMOTION_CODES.has(latest.failureCode)) demotedStoreIds.push(id);
+    }
+
+    const latestOfferSignal = safe[0] || null;
+    const offerCaution = latestOfferSignal && latestOfferSignal.outcome === 'failure' && latestOfferSignal.failureCode === 'offer_ended'
+      ? 'offer_ended'
+      : null;
+
+    return Object.freeze({
+      evidenceClass: EVIDENCE_CLASS,
+      brandId: safeBrandId,
+      offerId: safeOfferId,
+      demotedStoreIds: Object.freeze(demotedStoreIds),
+      offerCaution
+    });
+  }
+
+  return Object.freeze({ createExecutionGuidance, EVIDENCE_CLASS, DEFAULT_MAX_AGE_MS });
+});
 ;
 (function (root, factory) {
   const api = factory();
@@ -770,16 +943,29 @@
 
 ;
 (function (root, factory) {
-  const api = factory(root.StackBackMvp && root.StackBackMvp.Decision);
+  const decision = typeof module === 'object' && module.exports
+    ? require('../domain/decision.js')
+    : root.StackBackMvp && root.StackBackMvp.Decision;
+  const guidance = typeof module === 'object' && module.exports
+    ? require('../domain/execution-guidance.js')
+    : root.StackBackMvp && root.StackBackMvp.ExecutionGuidance;
+  const api = factory(decision, guidance);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
   root.StackBackMvp.FindSavings = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Decision) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Decision, ExecutionGuidance) {
   'use strict';
 
-  function createFindSavingsUseCase({ storeProvider, offerProvider, verifiedOfferProvider } = {}) {
+  function createFindSavingsUseCase({
+    storeProvider,
+    offerProvider,
+    verifiedOfferProvider,
+    executionStore = null,
+    clock = () => new Date().toISOString()
+  } = {}) {
     if (!Decision) throw new Error('Decision domain is required');
     if (typeof storeProvider !== 'function' || typeof offerProvider !== 'function') throw new TypeError('providers are required');
+    if (typeof clock !== 'function') throw new TypeError('clock is required');
     const trustedProvider = typeof verifiedOfferProvider === 'function'
       ? verifiedOfferProvider
       : async () => Object.freeze({ freshness: 'unsupported', rows: [] });
@@ -794,10 +980,10 @@
         trustedProvider({ brandId: intent.brandId, location })
       ]);
 
-      const stores = storeResult.status === 'fulfilled' ? storeResult.value : [];
+      const stores = storeResult.status === 'fulfilled' && Array.isArray(storeResult.value) ? storeResult.value : [];
       const offerPayload = offerResult.status === 'fulfilled' ? offerResult.value : { freshness: 'unknown', rows: [] };
       const verifiedPayload = verifiedResult.status === 'fulfilled' ? verifiedResult.value : { freshness: 'unknown', rows: [] };
-      return Decision.buildSavingsPlan({
+      const planInput = {
         intent,
         stores,
         offers: Array.isArray(offerPayload.rows) ? offerPayload.rows : [],
@@ -807,13 +993,31 @@
         storeError: storeResult.status === 'rejected' ? storeResult.reason && storeResult.reason.message : null,
         offerError: offerResult.status === 'rejected' ? offerResult.reason && offerResult.reason.message : null,
         verifiedOfferError: verifiedResult.status === 'rejected' ? verifiedResult.reason && verifiedResult.reason.message : null
-      });
+      };
+      const basePlan = Decision.buildSavingsPlan(planInput);
+      if (
+        !basePlan.offer ||
+        !ExecutionGuidance || typeof ExecutionGuidance.createExecutionGuidance !== 'function' ||
+        !executionStore || typeof executionStore.list !== 'function'
+      ) return basePlan;
+
+      try {
+        const localGuidance = ExecutionGuidance.createExecutionGuidance({
+          reports: executionStore.list(),
+          brandId: intent.brandId,
+          offerId: basePlan.offer.id,
+          candidateStoreIds: stores.map((row) => row && row.id),
+          now: clock()
+        });
+        return Decision.buildSavingsPlan({ ...planInput, localGuidance });
+      } catch {
+        return basePlan;
+      }
     };
   }
 
   return Object.freeze({ createFindSavingsUseCase });
 });
-
 ;
 (function (root, factory) {
   const api = factory();
@@ -855,6 +1059,14 @@
   root.StackBackMvp.Render = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+
+  const FAILURE_LABELS = Object.freeze({
+    store_not_participating: '门店不参加',
+    offer_not_shown: '点购页未显示活动',
+    price_mismatch: '价格与预期不符',
+    offer_ended: '活动显示已结束',
+    other: '其他原因'
+  });
 
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -902,26 +1114,28 @@
     return `
       <section class="execution-panel">
         <div class="support-title">实际用完后，告诉 StackBack 结果</div>
-        <div class="answer-sub">这一步只记录你的真实执行反馈，不会把单次自报升级成全局“已确认”。成功时请填实付金额；若你确实知道同一组合的常规价，可选填对比价。</div>
+        <div class="answer-sub">这一步只记录你的真实执行反馈，不会把单次自报升级成全局“已确认”。成功时请填实付金额；失败时请选择最接近的结构化原因，补充说明只作为备注。</div>
         <form class="execution-form" data-role="execution-form">
           <label><span>结果</span><select name="outcome"><option value="success">成功使用</option><option value="failure">未成功</option></select></label>
           <div class="execution-money-grid">
-            <label><span>实际支付</span><input name="actualPaid" inputmode="decimal" type="number" min="0" max="100000" step="0.01" placeholder="例如 13.9"></label>
+            <label><span>实际支付</span><input name="actualPaid" inputmode="decimal" type="number" min="0" max="100000" step="0.01" placeholder="成功时填写，例如 13.9"></label>
             <label><span>常规/对比价（选填）</span><input name="comparisonPrice" inputmode="decimal" type="number" min="0" max="100000" step="0.01" placeholder="只有确实知道才填"></label>
           </div>
-          <label><span>失败原因（失败时选填）</span><input name="failureReason" maxlength="180" placeholder="例如：点购页未显示活动"></label>
+          <label><span>失败原因（失败时必选）</span><select name="failureCode"><option value="">请选择</option><option value="store_not_participating">门店不参加</option><option value="offer_not_shown">点购页未显示活动</option><option value="price_mismatch">价格与预期不符</option><option value="offer_ended">活动显示已结束</option><option value="other">其他原因</option></select></label>
+          <label><span>补充说明（选填）</span><input name="failureNote" maxlength="180" placeholder="只作为本机备注，不直接参与排序"></label>
           <button class="primary-btn execution-submit" type="submit">记录本次结果</button>
         </form>
         <div data-role="execution-result"></div>
-        <div class="local-note">当前记录仅保存在这个浏览器中；它属于 user_reported_local 证据，不会改变优惠、门店或省额的全局可信状态。</div>
+        <div class="local-note">记录仅保存在这个浏览器中。结构化失败原因最多影响近 72 小时内同一优惠的本机候选顺序；不会改变优惠、门店或省额的全局可信状态。</div>
       </section>`;
   }
 
   function renderExecutionReceipt(report) {
     if (!report || report.evidenceClass !== 'user_reported_local') return '<div class="execution-receipt warning">没有保存无效执行记录。</div>';
     if (report.outcome === 'failure') {
-      const reason = report.failureReason ? `：${escapeHtml(report.failureReason)}` : '';
-      return `<div class="execution-receipt warning"><strong>已记录：本次未成功（用户自报）</strong>${reason}<div>这条记录不会把优惠标记为失效，只会作为本机执行反馈。</div></div>`;
+      const label = FAILURE_LABELS[report.failureCode] || '其他原因';
+      const note = report.failureNote ? `：${escapeHtml(report.failureNote)}` : '';
+      return `<div class="execution-receipt warning"><strong>已记录：本次未成功（用户自报）</strong><div>${escapeHtml(label)}${note}</div><div>这条记录不会把优惠或门店标记为失效；符合精确上下文和时效条件时，只会在下次搜索中作为本机候选排序提示。</div></div>`;
     }
     const paid = report.actualPaid ? formatMoney(report.actualPaid.amount, report.actualPaid.currency) : '金额未知';
     if (report.successfulSavingsSession && report.comparisonPrice && report.selfReportedDifference) {
@@ -949,6 +1163,21 @@
         ${empty}
         <div class="local-note">只汇总通过证据校验的 user_reported_local 记录；累计少付金额来自你提供的可比较价格，不会升级为 StackBack 的全局可靠省额。</div>
       </section>`;
+  }
+
+  function renderLocalFeedback(plan) {
+    const feedback = plan && plan.localFeedback;
+    if (!feedback || feedback.evidenceClass !== 'user_reported_local_guidance') return '';
+    const messages = [];
+    const demotedCount = Array.isArray(feedback.demotedStoreIds) ? feedback.demotedStoreIds.length : 0;
+    if (demotedCount > 0) {
+      messages.push(`这个浏览器近 72 小时的同一优惠执行记录让 ${demotedCount} 家候选暂时后排；门店仍是候选，并非官方“不参加”结论。`);
+    }
+    if (feedback.offerCaution === 'offer_ended') {
+      messages.push('这个浏览器近期记录过“活动显示已结束”；这里只提示再次核验，不能据此判定官方活动已经结束。');
+    }
+    if (!messages.length) return '';
+    return `<div class="local-guidance"><strong>本机执行反馈</strong><div>${messages.map((message) => escapeHtml(message)).join('<br>')}</div></div>`;
   }
 
   function renderPlan(plan) {
@@ -989,6 +1218,7 @@
           <div class="answer-section"><div class="answer-label">怎么省</div>${how}</div>
           <div class="answer-section"><div class="answer-label">是否可靠</div><div class="trust-copy">${escapeHtml(reliabilityText(plan))}</div><div class="badges">${badges}</div></div>
         </div>
+        ${renderLocalFeedback(plan)}
         ${otherStores}
         ${verified && plan.store ? renderExecutionForm() : ''}
         <div class="attribution">门店数据 © OpenStreetMap contributors</div>
@@ -997,18 +1227,16 @@
 
   return Object.freeze({ renderPlan, renderExecutionReceipt, renderExecutionLedger, formatDistance, formatPrice, formatMoney, escapeHtml });
 });
-
 ;
 (function () {
   'use strict';
 
   const S = globalThis.StackBackMvp;
-  if (!S || !S.Decision || !S.ExecutionReport || !S.ExecutionLedger || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.LocalExecutionStore || !S.FindSavings || !S.RecordExecution || !S.Render) throw new Error('StackBack MVP modules are incomplete');
+  if (!S || !S.Decision || !S.ExecutionReport || !S.ExecutionLedger || !S.ExecutionGuidance || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.LocalExecutionStore || !S.FindSavings || !S.RecordExecution || !S.Render) throw new Error('StackBack MVP modules are incomplete');
 
   const storeProvider = S.OsmStores.createStoreProvider();
   const offerProvider = S.PreviewOffers.createOfferProvider();
   const verifiedOfferProvider = S.VerifiedOffers.createVerifiedOfferProvider();
-  const findSavings = S.FindSavings.createFindSavingsUseCase({ storeProvider, offerProvider, verifiedOfferProvider });
   let executionStore = null;
   let recordExecution = null;
   try {
@@ -1018,6 +1246,12 @@
     executionStore = null;
     recordExecution = null;
   }
+  const findSavings = S.FindSavings.createFindSavingsUseCase({
+    storeProvider,
+    offerProvider,
+    verifiedOfferProvider,
+    executionStore
+  });
 
   const state = { location: null, searching: false, currentPlan: null };
   const el = {
@@ -1075,7 +1309,8 @@
             outcome: String(data.get('outcome') || ''),
             actualPaid: String(data.get('actualPaid') || '').trim(),
             comparisonPrice: String(data.get('comparisonPrice') || '').trim(),
-            failureReason: String(data.get('failureReason') || '').trim()
+            failureCode: String(data.get('failureCode') || '').trim(),
+            failureNote: String(data.get('failureNote') || '').trim()
           }
         });
         output.innerHTML = S.Render.renderExecutionReceipt(report);
