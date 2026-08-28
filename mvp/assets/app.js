@@ -2,9 +2,146 @@
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
-  root.StackBackMvp.Decision = api;
+  root.StackBackMvp.VerifiedOfferRegistry = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+
+  const SOURCE_URL = 'https://www.mcdonalds.com.cn/news/20260824-BABBM/';
+  const VALID_FROM = '2026-08-24';
+  const VALID_THROUGH = '2026-09-15';
+
+  const DEFINITIONS = Object.freeze([
+    Object.freeze({
+      id: 'mcd-cn-mix-match-20260824',
+      brandId: 'mcd-cn',
+      title: '随心配指定组合 13.9元起',
+      sourceUrl: SOURCE_URL,
+      offerPrice: Object.freeze({ amount: 13.9, currency: 'CNY', kind: 'starting_bundle_price' }),
+      priceQualifier: '部分蓝区指定产品需另加1元，实际14.9元',
+      validFrom: VALID_FROM,
+      validThrough: VALID_THROUGH,
+      applicability: 'partial_restaurants',
+      stacking: 'not_allowed',
+      dailyWindow: null,
+      availabilityNote: '早餐时段后供应，具体以餐厅实际情况为准',
+      channels: Object.freeze(['麦当劳App到店取餐', '微信/支付宝小程序到店取餐', '车道取餐', '自助点餐机', '餐厅柜台']),
+      executionSteps: Object.freeze([
+        '先在麦当劳App或微信/支付宝小程序选择附近门店',
+        '早餐时段后进入到店取餐；也可使用车道取餐、自助点餐机或餐厅柜台',
+        '随心配选择1款粉区指定产品 + 1款蓝区指定产品',
+        '确认点购页显示13.9元；部分蓝区指定产品为14.9元',
+        '确认该门店参与后再下单，不与其他优惠叠加'
+      ])
+    }),
+    Object.freeze({
+      id: 'mcd-cn-seafood-milo-addon-20260824',
+      brandId: 'mcd-cn',
+      title: '海鲜堡三件套 +3元换购美禄可可雪冰',
+      sourceUrl: SOURCE_URL,
+      offerPrice: Object.freeze({ amount: 3, currency: 'CNY', kind: 'addon_upgrade_price' }),
+      priceQualifier: '购买新加坡蟹酱海鲜堡三件套时，套餐内默认饮品+3元可换购为美禄可可雪冰',
+      validFrom: VALID_FROM,
+      validThrough: VALID_THROUGH,
+      applicability: 'partial_mccafe_restaurants',
+      stacking: 'not_allowed',
+      dailyWindow: '10:30:00-23:59:59',
+      availabilityNote: '每日10:30-23:59:59，仅部分供应麦咖啡的麦当劳餐厅，且需在产品供应时段内',
+      channels: Object.freeze(['麦当劳App到店取餐', '微信/支付宝小程序到店取餐', '自助点餐机']),
+      executionSteps: Object.freeze([
+        '先选择附近麦当劳门店，并确认该门店供应麦咖啡',
+        '在每日10:30-23:59:59进入App或微信/支付宝小程序到店取餐，也可使用自助点餐机',
+        '购买新加坡蟹酱海鲜堡三件套',
+        '确认套餐默认饮品显示+3元可换购美禄可可雪冰',
+        '确认该门店参与且产品有货后再下单，不与其他优惠叠加'
+      ])
+    })
+  ]);
+
+  function chinaDateKey(ms) {
+    const date = new Date(ms);
+    if (!Number.isFinite(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('en', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  }
+
+  function active(definition, nowMs) {
+    const today = chinaDateKey(nowMs);
+    return Boolean(today && today >= definition.validFrom && today <= definition.validThrough);
+  }
+
+  function samePrice(actual, expected) {
+    return Boolean(actual && typeof actual === 'object' &&
+      Number(actual.amount) === expected.amount &&
+      actual.currency === expected.currency &&
+      actual.kind === expected.kind);
+  }
+
+  function sameCoreFact(raw, definition) {
+    if (!raw || typeof raw !== 'object') return false;
+    return raw.id === definition.id &&
+      raw.brandId === definition.brandId &&
+      raw.title === definition.title &&
+      raw.sourceUrl === definition.sourceUrl &&
+      samePrice(raw.offerPrice, definition.offerPrice) &&
+      raw.priceQualifier === definition.priceQualifier &&
+      raw.validFrom === definition.validFrom &&
+      raw.validThrough === definition.validThrough &&
+      raw.applicability === definition.applicability &&
+      raw.stacking === definition.stacking &&
+      (definition.dailyWindow === null ? raw.dailyWindow == null : raw.dailyWindow === definition.dailyWindow);
+  }
+
+  function authorizedCopy(definition) {
+    return Object.freeze({
+      id: definition.id,
+      brandId: definition.brandId,
+      title: definition.title,
+      sourceUrl: definition.sourceUrl,
+      status: 'verified_official',
+      offerPrice: definition.offerPrice,
+      priceQualifier: definition.priceQualifier,
+      validFrom: definition.validFrom,
+      validThrough: definition.validThrough,
+      applicability: definition.applicability,
+      stacking: definition.stacking,
+      dailyWindow: definition.dailyWindow,
+      availabilityNote: definition.availabilityNote,
+      channels: definition.channels,
+      executionSteps: definition.executionSteps
+    });
+  }
+
+  function authorizeVerifiedOffer(raw, { nowMs = Date.now() } = {}) {
+    const definition = DEFINITIONS.find((item) => item.id === (raw && raw.id));
+    if (!definition || !active(definition, nowMs) || !sameCoreFact(raw, definition)) return null;
+    return authorizedCopy(definition);
+  }
+
+  function listTrustedOffers({ brandId = null, nowMs = Date.now() } = {}) {
+    return Object.freeze(DEFINITIONS
+      .filter((item) => (!brandId || item.brandId === brandId) && active(item, nowMs))
+      .map(authorizedCopy));
+  }
+
+  return Object.freeze({ authorizeVerifiedOffer, listTrustedOffers });
+});
+
+;
+(function (root, factory) {
+  const registry = typeof module === 'object' && module.exports
+    ? require('./verified-offer-registry.js')
+    : root.StackBackMvp && root.StackBackMvp.VerifiedOfferRegistry;
+  const api = factory(registry);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.Decision = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (registry) {
+  'use strict';
+
+  if (!registry || typeof registry.authorizeVerifiedOffer !== 'function') throw new Error('verified offer registry is required');
 
   const BRAND_RULES = Object.freeze([
     { id: 'mcd-cn', name: '麦当劳', searchText: '麦当劳', pattern: /(麦当劳|mcdonald'?s|mcd)/i },
@@ -71,34 +208,7 @@
 
   function normalizeVerifiedOffer(row) {
     if (!row || typeof row !== 'object' || row.status !== 'verified_official') return null;
-    const id = cleanText(row.id, 120);
-    const title = cleanText(row.title, 220);
-    const sourceUrl = cleanText(row.sourceUrl, 500);
-    const priceQualifier = cleanText(row.priceQualifier, 180);
-    if (id !== 'mcd-cn-mix-match-20260824' || title !== '随心配指定组合 13.9元起' || priceQualifier !== '部分蓝区指定产品需另加1元，实际14.9元') return null;
-    try {
-      const url = new URL(sourceUrl);
-      if (url.toString() !== 'https://www.mcdonalds.com.cn/news/20260824-BABBM/') return null;
-    } catch {
-      return null;
-    }
-    const price = row.offerPrice;
-    if (!price || Number(price.amount) !== 13.9 || price.currency !== 'CNY' || price.kind !== 'starting_bundle_price') return null;
-    if (row.applicability !== 'partial_restaurants' || row.stacking !== 'not_allowed') return null;
-    if (!Array.isArray(row.executionSteps) || row.executionSteps.length < 1 || row.executionSteps.length > 6) return null;
-    const executionSteps = row.executionSteps.map((step) => cleanText(step, 220));
-    if (executionSteps.some((step) => !step)) return null;
-    return Object.freeze({
-      id,
-      title,
-      sourceUrl,
-      status: 'verified_official',
-      offerPrice: Object.freeze({ amount: 13.9, currency: 'CNY', kind: 'starting_bundle_price' }),
-      priceQualifier,
-      applicability: 'partial_restaurants',
-      stacking: 'not_allowed',
-      executionSteps: Object.freeze(executionSteps)
-    });
+    return registry.authorizeVerifiedOffer(row);
   }
 
   function normalizeLocalGuidance(value, { brandId, offerId, storeIds } = {}) {
@@ -138,8 +248,11 @@
     const normalizedIntent = intent && typeof intent === 'object' ? intent : normalizeIntent('');
     const normalizedStores = stores.map(normalizeStore).filter(Boolean);
     const normalizedOffers = offers.map(normalizeOffer).filter(Boolean);
-    const normalizedVerified = verifiedOfferFreshness === 'fresh' ? verifiedOffers.map(normalizeVerifiedOffer).filter(Boolean) : [];
+    const normalizedVerified = verifiedOfferFreshness === 'fresh'
+      ? verifiedOffers.map(normalizeVerifiedOffer).filter((row) => row && row.brandId === normalizedIntent.brandId)
+      : [];
     const verifiedOffer = normalizedVerified[0] || null;
+    const verifiedAlternatives = Object.freeze(normalizedVerified.slice(1, 3));
     const offer = verifiedOffer || normalizedOffers[0] || null;
     const selectedFreshness = verifiedOffer ? verifiedOfferFreshness : offerFreshness;
     const localFeedback = offer
@@ -168,6 +281,7 @@
       intent: normalizedIntent,
       store,
       offer,
+      verifiedAlternatives,
       otherStores: Object.freeze(normalizedStores.slice(1, 3)),
       otherOffers: Object.freeze(normalizedOffers.filter((row) => !offer || row.id !== offer.id).slice(0, 3)),
       offerFreshness: selectedFreshness,
@@ -195,6 +309,7 @@
 
   return Object.freeze({ normalizeIntent, buildSavingsPlan, canEnterCouponPool, cleanText });
 });
+
 ;
 (function (root, factory) {
   const api = factory();
@@ -816,41 +931,26 @@
 
 ;
 (function (root, factory) {
-  const api = factory();
+  const registry = typeof module === 'object' && module.exports
+    ? require('../domain/verified-offer-registry.js')
+    : root.StackBackMvp && root.StackBackMvp.VerifiedOfferRegistry;
+  const api = factory(registry);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
   root.StackBackMvp.VerifiedOffers = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (registry) {
   'use strict';
+
+  if (!registry || typeof registry.authorizeVerifiedOffer !== 'function' || typeof registry.listTrustedOffers !== 'function') {
+    throw new Error('verified offer registry is required');
+  }
 
   const ROUTE = Object.freeze({
     brandId: 'mcd-cn',
-    path: './data/verified-mcd-cn.json',
-    sourceUrl: 'https://www.mcdonalds.com.cn/news/20260824-BABBM/'
+    path: './data/verified-offer-registry-v1.json'
   });
-  const AUTHORITY = 'stackback-first-party-verifier';
-  const EXPECTED_ID = 'mcd-cn-mix-match-20260824';
-  const EXPECTED_TITLE = '随心配指定组合 13.9元起';
-  const EXPECTED_QUALIFIER = '部分蓝区指定产品需另加1元，实际14.9元';
-  const EXPECTED_FROM = '2026-08-24';
-  const EXPECTED_THROUGH = '2026-09-15';
+  const LEGACY_AUTHORITY = 'stackback-first-party-verifier';
   const FRESH_MS = 24 * 60 * 60 * 1000;
-
-  function cleanText(value, max = 220) {
-    return String(value == null ? '' : value)
-      .replace(/[\u0000-\u001f\u007f]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, max);
-  }
-
-  function chinaDateKey(ms) {
-    const parts = new Intl.DateTimeFormat('en', {
-      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
-    }).formatToParts(new Date(ms));
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day}`;
-  }
 
   function isLikelyChina(location) {
     if (!location) return false;
@@ -859,61 +959,58 @@
     return Number.isFinite(lat) && Number.isFinite(lon) && lat >= 18 && lat <= 54 && lon >= 73 && lon <= 135;
   }
 
-  function normalizeStringArray(value, { min = 1, max = 8, itemMax = 160 } = {}) {
-    if (!Array.isArray(value) || value.length < min || value.length > max) throw new Error('invalid verified offer list');
-    const rows = value.map((item) => cleanText(item, itemMax));
-    if (rows.some((item) => !item)) throw new Error('invalid verified offer list item');
-    return Object.freeze(rows);
-  }
-
-  function normalizeVerifiedRow(raw, nowMs) {
-    if (!raw || typeof raw !== 'object') throw new Error('invalid verified offer row');
-    const id = cleanText(raw.id, 120);
-    const title = cleanText(raw.title, 220);
-    const sourceUrl = cleanText(raw.sourceUrl, 500);
-    const priceQualifier = cleanText(raw.priceQualifier, 180);
-    if (id !== EXPECTED_ID || title !== EXPECTED_TITLE || priceQualifier !== EXPECTED_QUALIFIER) throw new Error('verified offer identity mismatch');
-    const url = new URL(sourceUrl);
-    if (url.toString() !== ROUTE.sourceUrl) throw new Error('verified offer source mismatch');
-
-    const price = raw.offerPrice;
-    if (!price || typeof price !== 'object' || Number(price.amount) !== 13.9 || price.currency !== 'CNY' || price.kind !== 'starting_bundle_price') {
-      throw new Error('verified offer price mismatch');
-    }
-    if (raw.validFrom !== EXPECTED_FROM || raw.validThrough !== EXPECTED_THROUGH) throw new Error('verified offer validity mismatch');
-    if (raw.applicability !== 'partial_restaurants' || raw.stacking !== 'not_allowed') throw new Error('verified offer rule mismatch');
-    const today = chinaDateKey(nowMs);
-    if (today < EXPECTED_FROM || today > EXPECTED_THROUGH) return null;
-
+  function parseCaptureTime(snapshot, { nowMs, freshMs }) {
+    const capturedAtMs = Date.parse(snapshot.capturedAt);
+    if (!Number.isFinite(capturedAtMs) || capturedAtMs > nowMs + 5 * 60 * 1000) throw new Error('invalid verified snapshot capture time');
+    const age = Math.max(0, nowMs - capturedAtMs);
     return Object.freeze({
-      id,
-      title,
-      sourceUrl: url.toString(),
-      status: 'verified_official',
-      offerPrice: Object.freeze({ amount: 13.9, currency: 'CNY', kind: 'starting_bundle_price' }),
-      priceQualifier,
-      validFrom: EXPECTED_FROM,
-      validThrough: EXPECTED_THROUGH,
-      availabilityNote: cleanText(raw.availabilityNote, 220),
-      applicability: 'partial_restaurants',
-      stacking: 'not_allowed',
-      channels: normalizeStringArray(raw.channels, { max: 6 }),
-      executionSteps: normalizeStringArray(raw.executionSteps, { max: 6, itemMax: 220 })
+      capturedAtMs,
+      capturedAt: new Date(capturedAtMs).toISOString(),
+      freshness: age <= freshMs ? 'fresh' : 'stale'
     });
   }
 
+  function canonicalizeAuthorizedRows(rows, nowMs) {
+    const authorizedById = new Map();
+    for (const raw of rows) {
+      const authorized = registry.authorizeVerifiedOffer(raw, { nowMs });
+      if (authorized && !authorizedById.has(authorized.id)) authorizedById.set(authorized.id, authorized);
+    }
+    const ordered = registry.listTrustedOffers({ nowMs })
+      .map((definition) => authorizedById.get(definition.id))
+      .filter(Boolean);
+    return Object.freeze(ordered);
+  }
+
+  function parseVerifiedRegistrySnapshot(snapshot, { nowMs = Date.now(), freshMs = FRESH_MS } = {}) {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw new TypeError('verified registry snapshot must be an object');
+    if (snapshot.schemaVersion !== 1 || snapshot.kind !== 'stackback_verified_offer_registry') throw new Error('verified registry snapshot schema mismatch');
+    if (snapshot.market !== 'China') throw new Error('verified registry snapshot context mismatch');
+    if (!Array.isArray(snapshot.rows) || snapshot.rows.length > 20) throw new Error('invalid verified registry rows');
+    const capture = parseCaptureTime(snapshot, { nowMs, freshMs });
+    if (capture.freshness !== 'fresh') return Object.freeze({ freshness: capture.freshness, capturedAt: capture.capturedAt, rows: Object.freeze([]) });
+    return Object.freeze({
+      freshness: capture.freshness,
+      capturedAt: capture.capturedAt,
+      rows: canonicalizeAuthorizedRows(snapshot.rows, nowMs)
+    });
+  }
+
+  // Legacy parser remains only for compatibility with the pre-0.7 MVP data file.
+  // MVP 0.7 runtime does not use provider-authored authority as a trust capability.
   function parseVerifiedSnapshot(snapshot, { nowMs = Date.now(), freshMs = FRESH_MS } = {}) {
-    if (!snapshot || typeof snapshot !== 'object') throw new TypeError('verified snapshot must be an object');
-    if (snapshot.schemaVersion !== 1 || snapshot.authority !== AUTHORITY) throw new Error('verified snapshot authority mismatch');
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw new TypeError('verified snapshot must be an object');
+    if (snapshot.schemaVersion !== 1 || snapshot.authority !== LEGACY_AUTHORITY) throw new Error('verified snapshot authority mismatch');
     if (snapshot.brandId !== ROUTE.brandId || snapshot.market !== 'China') throw new Error('verified snapshot context mismatch');
-    const capturedAtMs = Date.parse(snapshot.capturedAt);
-    if (!Number.isFinite(capturedAtMs) || capturedAtMs > nowMs + 5 * 60 * 1000) throw new Error('invalid verified snapshot capture time');
     if (!Array.isArray(snapshot.rows) || snapshot.rows.length > 3) throw new Error('invalid verified snapshot rows');
-    const age = Math.max(0, nowMs - capturedAtMs);
-    const freshness = age <= freshMs ? 'fresh' : 'stale';
-    if (freshness !== 'fresh') return Object.freeze({ freshness, capturedAt: new Date(capturedAtMs).toISOString(), rows: Object.freeze([]) });
-    const rows = snapshot.rows.map((row) => normalizeVerifiedRow(row, nowMs)).filter(Boolean);
-    return Object.freeze({ freshness, capturedAt: new Date(capturedAtMs).toISOString(), rows: Object.freeze(rows) });
+    const capture = parseCaptureTime(snapshot, { nowMs, freshMs });
+    if (capture.freshness !== 'fresh') return Object.freeze({ freshness: capture.freshness, capturedAt: capture.capturedAt, rows: Object.freeze([]) });
+    const withBrand = snapshot.rows.map((row) => ({ ...row, brandId: ROUTE.brandId }));
+    return Object.freeze({
+      freshness: capture.freshness,
+      capturedAt: capture.capturedAt,
+      rows: canonicalizeAuthorizedRows(withBrand, nowMs).slice(0, 1)
+    });
   }
 
   function createVerifiedOfferProvider({ fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
@@ -926,14 +1023,19 @@
       try {
         const response = await fetchImpl(ROUTE.path, { signal: controller.signal, headers: { Accept: 'application/json' }, cache: 'no-store' });
         if (!response.ok) throw new Error(`官方核验数据 HTTP ${response.status}`);
-        return parseVerifiedSnapshot(await response.json());
+        const parsed = parseVerifiedRegistrySnapshot(await response.json());
+        return Object.freeze({
+          freshness: parsed.freshness,
+          capturedAt: parsed.capturedAt,
+          rows: Object.freeze(parsed.rows.filter((row) => row.brandId === brandId))
+        });
       } finally {
         clearTimeout(timer);
       }
     };
   }
 
-  return Object.freeze({ createVerifiedOfferProvider, parseVerifiedSnapshot, isLikelyChina });
+  return Object.freeze({ createVerifiedOfferProvider, parseVerifiedRegistrySnapshot, parseVerifiedSnapshot, isLikelyChina });
 });
 
 ;
@@ -1130,7 +1232,10 @@
 
   function formatPrice(price) {
     if (!price || price.status !== 'verified' || price.currency !== 'CNY' || !Number.isFinite(Number(price.amount))) return null;
-    return formatMoney(price.amount, price.currency);
+    const money = formatMoney(price.amount, price.currency);
+    if (price.kind === 'starting_bundle_price') return `${money} 起`;
+    if (price.kind === 'addon_upgrade_price') return `+${money} 换购`;
+    return money;
   }
 
   function reliabilityText(plan) {
@@ -1138,7 +1243,7 @@
     if (plan.store) parts.push('门店来自 OpenStreetMap，仍属于附近候选');
     else parts.push('附近门店尚未找到');
     if (plan.offer && plan.offer.status === 'verified_official') {
-      parts.push('优惠条款由 StackBack 第一方核验流程从麦当劳官方活动页读取，当前核验快照有效');
+      parts.push('优惠条款由 StackBack 第一方核验流程从麦当劳官方活动页读取，并再次与 MVP 代码 Registry 授权事实核对');
       parts.push('官方明确仅部分餐厅适用，因此附近门店仍需在点购页确认参与');
       parts.push('官方明确本活动不与其他优惠同享');
     } else if (plan.offer) {
@@ -1213,14 +1318,20 @@
     if (!feedback || feedback.evidenceClass !== 'user_reported_local_guidance') return '';
     const messages = [];
     const demotedCount = Array.isArray(feedback.demotedStoreIds) ? feedback.demotedStoreIds.length : 0;
-    if (demotedCount > 0) {
-      messages.push(`这个浏览器近 72 小时的同一优惠执行记录让 ${demotedCount} 家候选暂时后排；门店仍是候选，并非官方“不参加”结论。`);
-    }
-    if (feedback.offerCaution === 'offer_ended') {
-      messages.push('这个浏览器近期记录过“活动显示已结束”；这里只提示再次核验，不能据此判定官方活动已经结束。');
-    }
+    if (demotedCount > 0) messages.push(`这个浏览器近 72 小时的同一优惠执行记录让 ${demotedCount} 家候选暂时后排；门店仍是候选，并非官方“不参加”结论。`);
+    if (feedback.offerCaution === 'offer_ended') messages.push('这个浏览器近期记录过“活动显示已结束”；这里只提示再次核验，不能据此判定官方活动已经结束。');
     if (!messages.length) return '';
     return `<div class="local-guidance"><strong>本机执行反馈</strong><div>${messages.map((message) => escapeHtml(message)).join('<br>')}</div></div>`;
+  }
+
+  function renderVerifiedAlternatives(plan) {
+    const rows = Array.isArray(plan && plan.verifiedAlternatives) ? plan.verifiedAlternatives : [];
+    if (!rows.length) return '';
+    const content = rows.map((row) => {
+      const price = formatPrice({ status: 'verified', amount: row.offerPrice.amount, currency: row.offerPrice.currency, kind: row.offerPrice.kind });
+      return `<div class="verified-alternative"><div class="mini-row"><span>${escapeHtml(row.title)}</span><strong>${escapeHtml(price || '价格待确认')}</strong></div><div class="answer-sub">${escapeHtml(row.priceQualifier)}。该活动本身已核验，但当前附近门店是否适用仍需点购页确认。</div><a class="text-link" href="${escapeHtml(row.sourceUrl)}" target="_blank" rel="noopener noreferrer">查看官方条款</a></div>`;
+    }).join('');
+    return `<div class="support-block"><div class="support-title">其他已核验官方活动</div>${content}</div>`;
   }
 
   function renderPlan(plan) {
@@ -1237,7 +1348,7 @@
         : '<div class="answer-sub">暂未找到明确优惠。先把最近门店找准，不把未知优惠包装成“预计省”。</div>';
 
     const savings = verified && verifiedPrice
-      ? `<div class="saving-value">省额待核验</div><div class="answer-sub">已核验活动成交价：${escapeHtml(verifiedPrice)} 起。${escapeHtml(plan.offer.priceQualifier)}。常规价随门店和组合变化，因此暂不把差额包装成“可靠可省”。</div>`
+      ? `<div class="saving-value">省额待核验</div><div class="answer-sub">已核验活动价格：${escapeHtml(verifiedPrice)}。${escapeHtml(plan.offer.priceQualifier)}。没有可靠常规价基线，因此暂不把差额包装成“可靠可省”。</div>`
       : '<div class="saving-value">待确认</div><div class="answer-sub">当前没有足够证据计算可靠节省金额</div>';
 
     const mapLink = plan.store && Number.isFinite(plan.store.lat) && Number.isFinite(plan.store.lon)
@@ -1249,7 +1360,7 @@
       : '';
 
     const badges = verified
-      ? `<span>优惠：官方核验</span><span>活动价：${escapeHtml(verifiedPrice || '待确认')}起</span><span>门店：待点购页确认</span><span>叠加：不可</span>`
+      ? `<span>优惠：官方核验</span><span>活动价格：${escapeHtml(verifiedPrice || '待确认')}</span><span>门店：待点购页确认</span><span>叠加：不可</span>`
       : '<span>门店：候选</span><span>金额：未知</span><span>叠加：未确认</span>';
 
     return `
@@ -1261,6 +1372,7 @@
           <div class="answer-section"><div class="answer-label">怎么省</div>${how}</div>
           <div class="answer-section"><div class="answer-label">是否可靠</div><div class="trust-copy">${escapeHtml(reliabilityText(plan))}</div><div class="badges">${badges}</div></div>
         </div>
+        ${renderVerifiedAlternatives(plan)}
         ${renderLocalFeedback(plan)}
         ${otherStores}
         ${verified && plan.store ? renderExecutionForm() : ''}
@@ -1270,6 +1382,7 @@
 
   return Object.freeze({ renderPlan, renderExecutionReceipt, renderExecutionLedger, formatDistance, formatPrice, formatMoney, escapeHtml });
 });
+
 ;
 (function () {
   'use strict';
