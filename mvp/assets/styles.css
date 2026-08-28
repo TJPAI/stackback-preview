@@ -13,7 +13,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 a { color: inherit; }
 .shell { width: min(720px, calc(100% - 28px)); margin: 0 auto; padding: 28px 0 72px; }
 .brandbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 42px; }
@@ -59,14 +59,27 @@ a { color: inherit; }
 .support-block { border-top: 1px solid var(--line); padding-top: 16px; }
 .support-title { font-size: 12px; color: var(--muted); font-weight: 800; margin-bottom: 6px; }
 .mini-row { display: flex; gap: 12px; justify-content: space-between; padding: 9px 0; font-size: 13px; color: #46534c; }
+.execution-panel { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 18px; }
+.execution-form { display: grid; gap: 10px; margin-top: 14px; }
+.execution-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 750; }
+.execution-form input, .execution-form select { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; background: #fbfcfa; color: var(--ink); outline: none; }
+.execution-form input:focus, .execution-form select:focus { border-color: #9ab3a4; box-shadow: 0 0 0 3px rgba(23,92,59,.08); }
+.execution-money-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.execution-submit { justify-self: start; }
+.execution-receipt { margin-top: 12px; border-radius: 14px; padding: 12px 13px; font-size: 13px; line-height: 1.55; }
+.execution-receipt strong { display: block; margin-bottom: 4px; }
+.execution-receipt.success { background: var(--accent-soft); color: #264d39; }
+.execution-receipt.warning { background: #fff5d9; color: var(--warn); }
+.local-note { margin-top: 10px; color: #87908b; font-size: 11px; line-height: 1.5; }
 .attribution { margin-top: 18px; color: #929a95; font-size: 10px; }
 .footer { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 24px; }
 @media (max-width: 560px) {
   .shell { width: min(100% - 20px, 720px); padding-top: 20px; }
   .brandbar { margin-bottom: 32px; }
   .hero h1 { font-size: 43px; }
-  .search-row { grid-template-columns: 1fr; }
+  .search-row, .execution-money-grid { grid-template-columns: 1fr; }
   .primary-btn { width: 100%; }
+  .execution-submit { justify-self: stretch; }
   .location-card { align-items: flex-start; flex-direction: column; }
   .ghost-btn { width: 100%; }
   .result-card { padding: 17px; }

@@ -158,6 +158,191 @@
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.ExecutionReport = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const EVIDENCE_CLASS = 'user_reported_local';
+  const CURRENCY = 'CNY';
+  const MAX_MONEY = 100000;
+  const TOP_KEYS = Object.freeze([
+    'schemaVersion', 'id', 'evidenceClass', 'observedAt', 'brandId', 'brandName',
+    'store', 'offer', 'outcome', 'actualPaid', 'comparisonPrice',
+    'selfReportedDifference', 'successfulSavingsSession', 'failureReason'
+  ]);
+
+  function cleanText(value, max = 160) {
+    return String(value == null ? '' : value)
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max);
+  }
+
+  function roundMoney(value) {
+    return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+  }
+
+  function parseMoney(value, { required = false } = {}) {
+    if (value == null || value === '') {
+      if (required) throw new TypeError('实际支付金额不能为空');
+      return null;
+    }
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0 || number > MAX_MONEY) throw new TypeError('金额无效');
+    return Object.freeze({ amount: roundMoney(number), currency: CURRENCY });
+  }
+
+  function normalizeContext(context) {
+    if (!context || typeof context !== 'object') throw new TypeError('执行上下文不能为空');
+    const brandId = cleanText(context.brandId, 80);
+    const brandName = cleanText(context.brandName, 80);
+    const store = context.store;
+    const offer = context.offer;
+    if (!brandId || !store || typeof store !== 'object' || !offer || typeof offer !== 'object') throw new TypeError('执行上下文不完整');
+    const storeId = cleanText(store.id, 120);
+    const storeName = cleanText(store.name, 120);
+    const offerId = cleanText(offer.id, 120);
+    const offerTitle = cleanText(offer.title, 220);
+    if (!storeId || !storeName || !offerId || !offerTitle) throw new TypeError('执行上下文标识无效');
+    return Object.freeze({
+      brandId,
+      brandName,
+      store: Object.freeze({ id: storeId, name: storeName, address: cleanText(store.address, 220) }),
+      offer: Object.freeze({ id: offerId, title: offerTitle })
+    });
+  }
+
+  function stableHash(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function createExecutionReport({ context, input, observedAt = new Date().toISOString() } = {}) {
+    const safeContext = normalizeContext(context);
+    if (!input || typeof input !== 'object') throw new TypeError('执行结果不能为空');
+    const outcome = input.outcome === 'success' || input.outcome === 'failure' ? input.outcome : null;
+    if (!outcome) throw new TypeError('执行结果必须为成功或失败');
+    const parsedObservedAt = new Date(observedAt);
+    if (!Number.isFinite(parsedObservedAt.getTime())) throw new TypeError('执行时间无效');
+    const observedIso = parsedObservedAt.toISOString();
+
+    const actualPaid = outcome === 'success' ? parseMoney(input.actualPaid, { required: true }) : null;
+    const comparisonPrice = outcome === 'success' ? parseMoney(input.comparisonPrice) : null;
+    if (comparisonPrice && comparisonPrice.amount <= actualPaid.amount) {
+      throw new TypeError('对比价不能低于实付价，也不能等于实付价；不确定请留空');
+    }
+    const selfReportedDifference = comparisonPrice
+      ? Object.freeze({ amount: roundMoney(comparisonPrice.amount - actualPaid.amount), currency: CURRENCY })
+      : null;
+    const successfulSavingsSession = Boolean(outcome === 'success' && selfReportedDifference && selfReportedDifference.amount > 0);
+    const failureReason = outcome === 'failure' ? cleanText(input.failureReason, 180) : '';
+    const idSeed = [observedIso, safeContext.brandId, safeContext.store.id, safeContext.offer.id, outcome, actualPaid && actualPaid.amount, comparisonPrice && comparisonPrice.amount, failureReason].join('|');
+
+    return Object.freeze({
+      schemaVersion: 1,
+      id: `execution-${parsedObservedAt.getTime()}-${stableHash(idSeed)}`,
+      evidenceClass: EVIDENCE_CLASS,
+      observedAt: observedIso,
+      brandId: safeContext.brandId,
+      brandName: safeContext.brandName,
+      store: safeContext.store,
+      offer: safeContext.offer,
+      outcome,
+      actualPaid,
+      comparisonPrice,
+      selfReportedDifference,
+      successfulSavingsSession,
+      failureReason
+    });
+  }
+
+  function sameKeys(object, allowed) {
+    if (!object || typeof object !== 'object' || Array.isArray(object)) return false;
+    const keys = Object.keys(object);
+    return keys.length === allowed.length && keys.every((key) => allowed.includes(key));
+  }
+
+  function normalizeStoredMoney(value) {
+    if (value == null) return null;
+    if (!sameKeys(value, ['amount', 'currency']) || value.currency !== CURRENCY) return null;
+    try { return parseMoney(value.amount, { required: true }); } catch { return null; }
+  }
+
+  function normalizeStoredReport(row) {
+    try {
+      if (!sameKeys(row, TOP_KEYS) || row.schemaVersion !== 1 || row.evidenceClass !== EVIDENCE_CLASS) return null;
+      const id = cleanText(row.id, 180);
+      if (!/^execution-[A-Za-z0-9._:-]+$/.test(id)) return null;
+      const observedAt = new Date(row.observedAt);
+      if (!Number.isFinite(observedAt.getTime())) return null;
+      const context = normalizeContext({
+        brandId: row.brandId,
+        brandName: row.brandName,
+        store: row.store,
+        offer: row.offer
+      });
+      if (!sameKeys(row.store, ['id', 'name', 'address']) || !sameKeys(row.offer, ['id', 'title'])) return null;
+      if (row.outcome !== 'success' && row.outcome !== 'failure') return null;
+
+      const actualPaid = normalizeStoredMoney(row.actualPaid);
+      const comparisonPrice = normalizeStoredMoney(row.comparisonPrice);
+      const storedDifference = normalizeStoredMoney(row.selfReportedDifference);
+      let selfReportedDifference = null;
+      let successfulSavingsSession = false;
+      let failureReason = '';
+
+      if (row.outcome === 'success') {
+        if (!actualPaid) return null;
+        if (row.comparisonPrice != null && !comparisonPrice) return null;
+        if (comparisonPrice) {
+          const expected = roundMoney(comparisonPrice.amount - actualPaid.amount);
+          if (expected <= 0 || !storedDifference || storedDifference.amount !== expected) return null;
+          selfReportedDifference = storedDifference;
+          successfulSavingsSession = true;
+        } else if (row.selfReportedDifference != null) {
+          return null;
+        }
+        if (row.failureReason !== '') return null;
+      } else {
+        if (row.actualPaid != null || row.comparisonPrice != null || row.selfReportedDifference != null || row.successfulSavingsSession !== false) return null;
+        failureReason = cleanText(row.failureReason, 180);
+      }
+      if (Boolean(row.successfulSavingsSession) !== successfulSavingsSession) return null;
+
+      return Object.freeze({
+        schemaVersion: 1,
+        id,
+        evidenceClass: EVIDENCE_CLASS,
+        observedAt: observedAt.toISOString(),
+        brandId: context.brandId,
+        brandName: context.brandName,
+        store: context.store,
+        offer: context.offer,
+        outcome: row.outcome,
+        actualPaid,
+        comparisonPrice,
+        selfReportedDifference,
+        successfulSavingsSession,
+        failureReason
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  return Object.freeze({ createExecutionReport, normalizeStoredReport, cleanText });
+});
+
+;
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
   root.StackBackMvp.BrowserLocation = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
@@ -481,6 +666,54 @@
 
 ;
 (function (root, factory) {
+  const domain = typeof module === 'object' && module.exports
+    ? require('../domain/execution-report.js')
+    : root.StackBackMvp && root.StackBackMvp.ExecutionReport;
+  const api = factory(domain);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.LocalExecutionStore = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (ExecutionReport) {
+  'use strict';
+
+  const STORAGE_KEY = 'stackback.mvp.execution.v1';
+
+  function createLocalExecutionStore({ storage, maxRecords = 20 } = {}) {
+    if (!ExecutionReport) throw new Error('ExecutionReport domain is required');
+    if (!storage || typeof storage.getItem !== 'function' || typeof storage.setItem !== 'function') throw new TypeError('local storage adapter is required');
+    const limit = Number(maxRecords);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new TypeError('maxRecords must be between 1 and 50');
+
+    function list() {
+      let parsed;
+      try {
+        const raw = storage.getItem(STORAGE_KEY);
+        if (!raw) return Object.freeze([]);
+        parsed = JSON.parse(raw);
+      } catch {
+        return Object.freeze([]);
+      }
+      if (!Array.isArray(parsed) || parsed.length > 100) return Object.freeze([]);
+      const safe = parsed.map((row) => ExecutionReport.normalizeStoredReport(row)).filter(Boolean).slice(0, limit);
+      return Object.freeze(safe);
+    }
+
+    function append(report) {
+      const safe = ExecutionReport.normalizeStoredReport(report);
+      if (!safe) throw new TypeError('execution report is not valid user-reported evidence');
+      const next = [safe, ...list().filter((row) => row.id !== safe.id)].slice(0, limit);
+      storage.setItem(STORAGE_KEY, JSON.stringify(next));
+      return safe;
+    }
+
+    return Object.freeze({ append, list });
+  }
+
+  return Object.freeze({ createLocalExecutionStore, STORAGE_KEY });
+});
+
+;
+(function (root, factory) {
   const api = factory(root.StackBackMvp && root.StackBackMvp.Decision);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
@@ -530,6 +763,39 @@
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.StackBackMvp = root.StackBackMvp || {};
+  root.StackBackMvp.RecordExecution = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  function createRecordExecutionUseCase({ executionDomain, executionStore, clock = () => new Date() } = {}) {
+    if (!executionDomain || typeof executionDomain.createExecutionReport !== 'function') throw new TypeError('execution domain is required');
+    if (!executionStore || typeof executionStore.append !== 'function') throw new TypeError('execution store is required');
+    if (typeof clock !== 'function') throw new TypeError('clock is required');
+
+    return function recordExecution({ plan, input } = {}) {
+      if (!plan || typeof plan !== 'object' || !plan.intent || !plan.store || !plan.offer) throw new TypeError('当前方案还不能记录执行结果');
+      const report = executionDomain.createExecutionReport({
+        context: {
+          brandId: plan.intent.brandId,
+          brandName: plan.intent.brandName,
+          store: { id: plan.store.id, name: plan.store.name, address: plan.store.address },
+          offer: { id: plan.offer.id, title: plan.offer.title }
+        },
+        input,
+        observedAt: clock().toISOString()
+      });
+      return executionStore.append(report);
+    };
+  }
+
+  return Object.freeze({ createRecordExecutionUseCase });
+});
+
+;
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StackBackMvp = root.StackBackMvp || {};
   root.StackBackMvp.Render = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
@@ -544,11 +810,16 @@
     return n < 1000 ? `${Math.round(n)} 米` : `${(n / 1000).toFixed(n < 3000 ? 1 : 0)} 公里`;
   }
 
+  function formatMoney(amount, currency = 'CNY') {
+    const number = Number(amount);
+    if (!Number.isFinite(number)) return null;
+    if (currency !== 'CNY') return `${number.toFixed(2)} ${escapeHtml(currency)}`;
+    return `¥${Number.isInteger(number) ? number : number.toFixed(2).replace(/0$/, '')}`;
+  }
+
   function formatPrice(price) {
     if (!price || price.status !== 'verified' || price.currency !== 'CNY' || !Number.isFinite(Number(price.amount))) return null;
-    const amount = Number(price.amount);
-    const text = Number.isInteger(amount) ? String(amount) : amount.toFixed(1);
-    return `¥${text}`;
+    return formatMoney(price.amount, price.currency);
   }
 
   function reliabilityText(plan) {
@@ -569,6 +840,40 @@
     }
     if (plan.diagnostics && plan.diagnostics.verifiedOfferError) parts.push('第一方核验源本次读取失败，未使用其旧结论');
     return parts.join('；') + '。';
+  }
+
+  function renderExecutionForm() {
+    return `
+      <section class="execution-panel">
+        <div class="support-title">实际用完后，告诉 StackBack 结果</div>
+        <div class="answer-sub">这一步只记录你的真实执行反馈，不会把单次自报升级成全局“已确认”。成功时请填实付金额；若你确实知道同一组合的常规价，可选填对比价。</div>
+        <form class="execution-form" data-role="execution-form">
+          <label><span>结果</span><select name="outcome"><option value="success">成功使用</option><option value="failure">未成功</option></select></label>
+          <div class="execution-money-grid">
+            <label><span>实际支付</span><input name="actualPaid" inputmode="decimal" type="number" min="0" max="100000" step="0.01" placeholder="例如 13.9"></label>
+            <label><span>常规/对比价（选填）</span><input name="comparisonPrice" inputmode="decimal" type="number" min="0" max="100000" step="0.01" placeholder="只有确实知道才填"></label>
+          </div>
+          <label><span>失败原因（失败时选填）</span><input name="failureReason" maxlength="180" placeholder="例如：点购页未显示活动"></label>
+          <button class="primary-btn execution-submit" type="submit">记录本次结果</button>
+        </form>
+        <div data-role="execution-result"></div>
+        <div class="local-note">当前记录仅保存在这个浏览器中；它属于 user_reported_local 证据，不会改变优惠、门店或省额的全局可信状态。</div>
+      </section>`;
+  }
+
+  function renderExecutionReceipt(report) {
+    if (!report || report.evidenceClass !== 'user_reported_local') return '<div class="execution-receipt warning">没有保存无效执行记录。</div>';
+    if (report.outcome === 'failure') {
+      const reason = report.failureReason ? `：${escapeHtml(report.failureReason)}` : '';
+      return `<div class="execution-receipt warning"><strong>已记录：本次未成功（用户自报）</strong>${reason}<div>这条记录不会把优惠标记为失效，只会作为本机执行反馈。</div></div>`;
+    }
+    const paid = report.actualPaid ? formatMoney(report.actualPaid.amount, report.actualPaid.currency) : '金额未知';
+    if (report.successfulSavingsSession && report.comparisonPrice && report.selfReportedDifference) {
+      const comparison = formatMoney(report.comparisonPrice.amount, report.comparisonPrice.currency);
+      const difference = formatMoney(report.selfReportedDifference.amount, report.selfReportedDifference.currency);
+      return `<div class="execution-receipt success"><strong>已记录 Successful Savings Session（用户自报）</strong><div>你报告实付 ${escapeHtml(paid)}，同一消费的可比较价格为 ${escapeHtml(comparison)}，少付 ${escapeHtml(difference)}。</div><div>该差额只作为你的自报结果保存，不等同于 StackBack 全局可靠省额。</div></div>`;
+    }
+    return `<div class="execution-receipt success"><strong>已记录：本次成功使用（用户自报）</strong><div>你报告实付 ${escapeHtml(paid)}。由于没有可靠的可比较常规价，本次不计算省额，也不计入量化 Successful Savings Session。</div></div>`;
   }
 
   function renderPlan(plan) {
@@ -610,11 +915,12 @@
           <div class="answer-section"><div class="answer-label">是否可靠</div><div class="trust-copy">${escapeHtml(reliabilityText(plan))}</div><div class="badges">${badges}</div></div>
         </div>
         ${otherStores}
+        ${verified && plan.store ? renderExecutionForm() : ''}
         <div class="attribution">门店数据 © OpenStreetMap contributors</div>
       </section>`;
   }
 
-  return Object.freeze({ renderPlan, formatDistance, formatPrice, escapeHtml });
+  return Object.freeze({ renderPlan, renderExecutionReceipt, formatDistance, formatPrice, formatMoney, escapeHtml });
 });
 
 ;
@@ -622,13 +928,23 @@
   'use strict';
 
   const S = globalThis.StackBackMvp;
-  if (!S || !S.Decision || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.FindSavings || !S.Render) throw new Error('StackBack MVP modules are incomplete');
+  if (!S || !S.Decision || !S.ExecutionReport || !S.BrowserLocation || !S.OsmStores || !S.PreviewOffers || !S.VerifiedOffers || !S.LocalExecutionStore || !S.FindSavings || !S.RecordExecution || !S.Render) throw new Error('StackBack MVP modules are incomplete');
 
   const storeProvider = S.OsmStores.createStoreProvider();
   const offerProvider = S.PreviewOffers.createOfferProvider();
   const verifiedOfferProvider = S.VerifiedOffers.createVerifiedOfferProvider();
   const findSavings = S.FindSavings.createFindSavingsUseCase({ storeProvider, offerProvider, verifiedOfferProvider });
-  const state = { location: null, searching: false };
+  let executionStore = null;
+  let recordExecution = null;
+  try {
+    executionStore = S.LocalExecutionStore.createLocalExecutionStore({ storage: globalThis.localStorage });
+    recordExecution = S.RecordExecution.createRecordExecutionUseCase({ executionDomain: S.ExecutionReport, executionStore });
+  } catch {
+    executionStore = null;
+    recordExecution = null;
+  }
+
+  const state = { location: null, searching: false, currentPlan: null };
   const el = {
     locate: document.querySelector('[data-action="locate"]'),
     locationStatus: document.querySelector('[data-role="location-status"]'),
@@ -647,7 +963,36 @@
   }
 
   function showMessage(message, tone = 'neutral') {
+    state.currentPlan = null;
     el.results.innerHTML = `<div class="status-card ${tone}">${S.Render.escapeHtml(message)}</div>`;
+  }
+
+  function bindExecutionFeedback() {
+    const form = el.results.querySelector('[data-role="execution-form"]');
+    const output = el.results.querySelector('[data-role="execution-result"]');
+    if (!form || !output) return;
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!recordExecution || !state.currentPlan) {
+        output.innerHTML = '<div class="execution-receipt warning">当前浏览器无法本机保存执行反馈。推荐本身不受影响。</div>';
+        return;
+      }
+      const data = new FormData(form);
+      try {
+        const report = recordExecution({
+          plan: state.currentPlan,
+          input: {
+            outcome: String(data.get('outcome') || ''),
+            actualPaid: String(data.get('actualPaid') || '').trim(),
+            comparisonPrice: String(data.get('comparisonPrice') || '').trim(),
+            failureReason: String(data.get('failureReason') || '').trim()
+          }
+        });
+        output.innerHTML = S.Render.renderExecutionReceipt(report);
+      } catch (error) {
+        output.innerHTML = `<div class="execution-receipt warning">${S.Render.escapeHtml(error && error.message ? error.message : '执行反馈未保存')}</div>`;
+      }
+    });
   }
 
   async function locate() {
@@ -681,7 +1026,9 @@
     showMessage('正在同时找附近门店、官方优惠候选和第一方核验活动…');
     try {
       const plan = await findSavings({ query, location: state.location });
+      state.currentPlan = plan;
       el.results.innerHTML = S.Render.renderPlan(plan);
+      bindExecutionFeedback();
     } catch (error) {
       showMessage(`这次没有完成判断：${error && error.message ? error.message : '未知错误'}。可以稍后重试或换一个更具体的品牌。`, 'warning');
     } finally {
