@@ -150,6 +150,11 @@
     { id: 'starbucks', name: '星巴克', searchText: '星巴克', pattern: /(星巴克|starbucks)/i }
   ]);
 
+  const PREFERRED_VERIFIED_OFFER_IDS = Object.freeze({
+    'mcd-mix-match': 'mcd-cn-mix-match-20260824',
+    'mcd-seafood-milo': 'mcd-cn-seafood-milo-addon-20260824'
+  });
+
   function cleanText(value, max = 160) {
     return String(value == null ? '' : value)
       .replace(/[\u0000-\u001f\u007f]/g, ' ')
@@ -164,11 +169,26 @@
     return keys.length === allowed.length && keys.every((key) => allowed.includes(key));
   }
 
+  function detectOfferPreference(raw, brandId) {
+    if (brandId !== 'mcd-cn') return null;
+    const miloOrSeafood = /(美禄|雪冰|海鲜堡|新加坡\s*蟹酱|\bmilo\b|seafood)/iu.test(raw);
+    const mixMatch = /(随心配|13\s*[.．]\s*9|1\s*\+\s*1)/iu.test(raw);
+    if (miloOrSeafood === mixMatch) return null;
+    return miloOrSeafood ? 'mcd-seafood-milo' : 'mcd-mix-match';
+  }
+
   function normalizeIntent(input) {
     const raw = cleanText(input, 80);
     const match = BRAND_RULES.find((rule) => rule.pattern.test(raw));
-    if (match) return Object.freeze({ brandId: match.id, brandName: match.name, searchText: match.searchText });
-    return Object.freeze({ brandId: null, brandName: null, searchText: raw });
+    if (match) {
+      return Object.freeze({
+        brandId: match.id,
+        brandName: match.name,
+        searchText: match.searchText,
+        offerPreference: detectOfferPreference(raw, match.id)
+      });
+    }
+    return Object.freeze({ brandId: null, brandName: null, searchText: raw, offerPreference: null });
   }
 
   function normalizeStore(row) {
@@ -206,9 +226,17 @@
     return Object.freeze({ id, title, sourceUrl, status: 'candidate' });
   }
 
-  function normalizeVerifiedOffer(row) {
+  function normalizeVerifiedOffer(row, nowMs) {
     if (!row || typeof row !== 'object' || row.status !== 'verified_official') return null;
-    return registry.authorizeVerifiedOffer(row);
+    return registry.authorizeVerifiedOffer(row, { nowMs });
+  }
+
+  function rankVerifiedOffersForIntent(rows, intent) {
+    const preferredId = intent && PREFERRED_VERIFIED_OFFER_IDS[intent.offerPreference];
+    if (!preferredId) return rows;
+    const preferredIndex = rows.findIndex((row) => row.id === preferredId);
+    if (preferredIndex <= 0) return rows;
+    return [rows[preferredIndex], ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
   }
 
   function normalizeLocalGuidance(value, { brandId, offerId, storeIds } = {}) {
@@ -243,14 +271,16 @@
     storeError = null,
     offerError = null,
     verifiedOfferError = null,
-    localGuidance = null
+    localGuidance = null,
+    nowMs = Date.now()
   } = {}) {
     const normalizedIntent = intent && typeof intent === 'object' ? intent : normalizeIntent('');
     const normalizedStores = stores.map(normalizeStore).filter(Boolean);
     const normalizedOffers = offers.map(normalizeOffer).filter(Boolean);
-    const normalizedVerified = verifiedOfferFreshness === 'fresh'
-      ? verifiedOffers.map(normalizeVerifiedOffer).filter((row) => row && row.brandId === normalizedIntent.brandId)
+    const authorizedVerified = verifiedOfferFreshness === 'fresh'
+      ? verifiedOffers.map((row) => normalizeVerifiedOffer(row, nowMs)).filter((row) => row && row.brandId === normalizedIntent.brandId)
       : [];
+    const normalizedVerified = rankVerifiedOffersForIntent(authorizedVerified, normalizedIntent);
     const verifiedOffer = normalizedVerified[0] || null;
     const verifiedAlternatives = Object.freeze(normalizedVerified.slice(1, 3));
     const offer = verifiedOffer || normalizedOffers[0] || null;

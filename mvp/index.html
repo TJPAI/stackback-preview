@@ -9,10 +9,10 @@
 </head>
 <body>
   <main class="shell">
-    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.7</div></div>
+    <div class="brandbar"><div class="logo">StackBack</div><div class="version">MVP · 0.8</div></div>
     <section class="hero">
       <h1>现在怎么买，最省？</h1>
-      <p>告诉 StackBack 你现在想买什么。先找附近门店，再把官方优惠候选、第一方核验条款和仍然未知的部分分开，给你一个能继续执行的答案。</p>
+      <p>告诉 StackBack 你现在想买什么。说得越具体，StackBack 越能从已经核验的官方活动里选出更贴近这次购买意图的方案，同时把仍然未知的部分继续保留为未知。</p>
     </section>
 
     <section class="location-card">
@@ -25,7 +25,7 @@
 
     <form class="search-card" data-role="search-form">
       <div class="search-row">
-        <input class="search-input" data-role="query" autocomplete="off" maxlength="80" placeholder="例如：麦当劳、肯德基、汉堡王、星巴克">
+        <input class="search-input" data-role="query" autocomplete="off" maxlength="80" placeholder="例如：麦当劳 美禄、麦当劳 随心配、肯德基">
         <button class="primary-btn" data-action="search" type="submit" disabled>告诉我现在怎么买</button>
       </div>
       <div class="chips">
@@ -34,7 +34,7 @@
         <button class="chip" type="button" data-query="汉堡王">汉堡王</button>
         <button class="chip" type="button" data-query="星巴克">星巴克</button>
       </div>
-      <div class="note">中国区四品牌官方候选统一来自共享 Candidate Read Model；麦当劳第一方核验活动通过 MVP Verified Offer Registry 逐条授权。本机结构化反馈只影响本机候选排序。Candidate ≠ Confirmed；官方活动价 ≠ 可靠省额；用户自报 ≠ 全局可靠省额。</div>
+      <div class="note">中国区四品牌官方候选统一来自共享 Candidate Read Model；麦当劳第一方核验活动通过 MVP Verified Offer Registry 逐条授权。购买意图只会在已核验活动之间调整主方案，不会制造新的优惠事实。本机结构化反馈只影响本机候选排序。Candidate ≠ Confirmed；官方活动价 ≠ 可靠省额；用户自报 ≠ 全局可靠省额。</div>
     </form>
 
     <section data-role="execution-ledger"></section>
